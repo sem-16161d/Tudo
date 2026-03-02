@@ -1,7 +1,8 @@
-import os
 import math
+from GreasyPidgin.Envelope import Envelope
 from random import random
 from librosa import load
+from librosa.feature import spectral_centroid, spectral_flatness, spectral_rolloff
 import librosa
 import scipy.io.wavfile as wavfile
 import numpy as np
@@ -49,7 +50,7 @@ class Sound:
         self.absSig = []
         self.peakAmplitude = 0
         self.peakdB = '-inf'
-        self.D,self.magnitude, self.phase, self.fftFrequencies = None, None, None,None
+        self.D,self.S, self.phase, self.fftFrequencies = None, None, None,None
         self.freq_list, self.mag_list, self.allpairs,self.sineHistogram = None,None,None,None
         self.mainPitchHz=None
 
@@ -111,7 +112,7 @@ class Sound:
         all_mags = []
         if self.D is None:
             self.stft()
-        for frame in self.D.T:
+        for frame in self.D.T:  # pyright: ignore[reportOptionalMemberAccess]
             f, m = self.sine_features_frame(
                 frame,
                 detectionThreshold=detectionThreshold,
@@ -144,12 +145,12 @@ class Sound:
             self.soundfile,
             n_fft=self.windowSize,
             hop_length=self.hopLength,)
-        self.magnitude, self.phase = librosa.magphase(self.D)
+        self.S, self.phase = librosa.magphase(self.D)
         self.fftFrequencies = librosa.fft_frequencies(
             sr=self.samplerate,
             n_fft=self.windowSize)
 
-    def getSineFeature(self,detectionThresholddB=-96,maxPeaks=16, toleranceCENTS = 30):
+    def getSineFeature(self,detectionThresholddB=-144,maxPeaks=16, toleranceCENTS = 30):
         self.freq_list, self.mag_list = self.sine_features(detectionThreshold=detectionThresholddB,maxPeaks=maxPeaks)
         self.allpairs =[
             (f,m) 
@@ -171,6 +172,27 @@ class Sound:
             self.getSineFeature()
         self.roughness = roughness_from_histo(self.sineHistogram)
 
+    def getSpectralCentroid(self, toleranceCENTS = 400):
+        if self.S is None:
+            self.stft()
+        self.spectralCentroids = spectral_centroid(S=self.S)[0]
+        pairs = [(f,1) for f in self.spectralCentroids]
+        cluster = cluster_by_cents(pairs, toleranceCENTS)
+        self.spectralCentroidHistogram = sorted([
+            (sc["center"], sc["relative"]) for sc in cluster],
+            key=lambda c: c[1],reverse=True)
+        self.spectralCentroidEnv = Envelope([float(val) for val in self.spectralCentroids])
+        self.spectralCentroid = self.spectralCentroidHistogram[0][0]
+        
+    def getFlatness(self):
+        if self.S is None:
+            self.stft()
+        self.flatnesses = spectral_flatness(S=self.S)[0]
+        self.flatnessEnv = Envelope([float(val) for val in self.flatnesses])
+        self.flatnessMedian = self.flatnessEnv.median_y()
+        self.flatnessMean = self.flatnessEnv.mean_y()
+
+        
 
     def __repr__(self):
         """
@@ -184,8 +206,10 @@ class Sound:
             f"   peakdB         : {self.peakdB}\n"
             f"   mainPitchHz    : {self.mainPitchHz}\n"
             f"   spectralDensity: {self.spectralDensity}\n"
-            f"   roughness      : { self.roughness}\n"
-
+            f"   roughness      : {self.roughness}\n"
+            f"   centroid(occ)  : {self.spectralCentroid}\n"
+            f"   flatness(mdn)  : {self.flatnessMedian}\n"
+            
         )
 
 
