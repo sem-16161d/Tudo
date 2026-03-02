@@ -15,4 +15,8 @@ authors = [
 dependencies = [
   "numpy", 
   "scipy",
-]
+  "GreasyPidgin",
+  "librosa",
+  "itertools",
+  "math", "random"
+] 

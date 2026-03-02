@@ -1,3 +1,4 @@
+import os
 import math
 from GreasyPidgin.Envelope import Envelope
 from random import random
@@ -21,7 +22,7 @@ class Sound:
         self, path = (48000, 3.14, "sine", 440),
         #self, path = (48000, 3.14, "white"),
         *,
-        windowSize = 2**10, hopLength= 2**9):
+        windowSize = 2**12, hopLength= 2**11):
         """
         Load and analyze a sound file.
         """
@@ -52,7 +53,8 @@ class Sound:
         self.peakdB = '-inf'
         self.D,self.S, self.phase, self.fftFrequencies = None, None, None,None
         self.freq_list, self.mag_list, self.allpairs,self.sineHistogram = None,None,None,None
-        self.mainPitchHz=None
+        self.mainPitchHz, self.spectralDensity, self.roughness, self.spectralCentroid=None, None, None, None
+        self.flatnessMedian = None
 
 
     def sine_features_frame(self, frame, detectionThreshold=-60, sortBy="magnitude", maxPeaks=None):
@@ -192,7 +194,12 @@ class Sound:
         self.flatnessMedian = self.flatnessEnv.median_y()
         self.flatnessMean = self.flatnessEnv.mean_y()
 
-        
+    def analyse(self):
+        self.getPeakAmplitude()
+        self.getRoughness()
+        self.getSpectralCentroid()
+        self.getFlatness()
+        print("Sound.analyse: done!")
 
     def __repr__(self):
         """
@@ -309,3 +316,15 @@ def roughness_from_histo(histo):
         freqs.append(f)
         amps.append(a)
     return roughness_from_chord(freqs, amps)
+
+
+
+
+def process_folder(path):
+    for filename in os.listdir(path):
+        file_path = os.path.join(path, filename)
+        if os.path.isfile(file_path) and filename.lower().endswith(('.wav')):
+            # print(file_path)
+            sound = Sound(file_path)
+            sound.analyse()
+            print(sound)
