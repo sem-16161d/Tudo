@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: Tudo
+Version: 0.1
+Summary: Taxonomy of utterances and dynamic oscillations
+Home-page: https://gitea.com/sem-16161d/Tudo
+Author: Sem Ribeiro Albuquerque Wendt
+Author-email: Sem Ribeiro Albuquerque Wendt <sem@16161d.net>
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: scipy
+Dynamic: author
+Dynamic: home-page
+Dynamic: license-file

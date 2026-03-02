@@ -1,0 +1,16 @@
+LICENSE
+README.md
+pyproject.toml
+setup.py
+src/Tudo/PartialTracker.py
+src/Tudo/Sound.py
+src/Tudo/__init__.py
+src/Tudo/main.py
+src/Tudo.egg-info/PKG-INFO
+src/Tudo.egg-info/SOURCES.txt
+src/Tudo.egg-info/dependency_links.txt
+src/Tudo.egg-info/requires.txt
+src/Tudo.egg-info/top_level.txt
+tests/test_main.py
+tests/test_partialTracker.py
+tests/test_sound.py
