@@ -3,7 +3,7 @@ import math
 from GreasyPidgin.Envelope import Envelope
 from random import random
 from librosa import load
-from librosa.feature import spectral_centroid, spectral_flatness, spectral_rolloff
+from librosa.feature import spectral_centroid, spectral_flatness
 import librosa
 import scipy.io.wavfile as wavfile
 import numpy as np
@@ -50,6 +50,7 @@ class Sound:
         
         self.absSig = []
         self.peakAmplitude = 0
+        self.dynamicEnv = None
         self.peakdB = '-inf'
         self.D,self.S, self.phase, self.fftFrequencies = None, None, None,None
         self.freq_list, self.mag_list, self.allpairs,self.sineHistogram = None,None,None,None
@@ -142,6 +143,11 @@ class Sound:
         self.peakdB = self._amp2dB(self.peakAmplitude)
         return    
 
+    def calculateDynamicEnv(self,numMinima=3, numMaxima=3, resolution = 10):
+        rawEnv = Envelope(self.absSig)
+        rawEnv.reduceEnvPoints(numMinima=numMinima, numMaxima=numMaxima, resolution=resolution)
+        self.simpleDynamicEnvNorm = rawEnv.reducedEnv
+
     def stft(self):
         self.D = librosa.stft(
             self.soundfile,
@@ -199,6 +205,7 @@ class Sound:
         self.getRoughness()
         self.getSpectralCentroid()
         self.getFlatness()
+        self.calculateDynamicEnv(3,3,resolution=10)
         print("Sound.analyse: done!")
 
     def __repr__(self):
