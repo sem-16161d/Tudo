@@ -10,6 +10,4 @@ s.analyse()
 
 print(s)
 
-s.simpleDynamicEnvNorm.display()
-
 # process_folder("/Users/sraw/Documents/SAMPLES/TUDO/SAMPLES/ACOUSTIC_INSTRUMENTS/WOODWIND/BASS_CLARINET/MULTIPHONIC")

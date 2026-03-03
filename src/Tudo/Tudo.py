@@ -1,43 +1,70 @@
 #Tudo.py
 from os import wait
-import psycopg2
 import subprocess
+from Tudo.PSQL import PSQL
 
-class Tudo():
+class Tudo(PSQL):
     def __init__(
         self,
-        libraryPath = "/Users/sraw/Documents/SAMPLES/TUDO/"):
-        self.librayPath = libraryPath
-        self.stopServer()
+        libraryPath = "/Users/sraw/Documents/SAMPLES/TUDO/PSQL/"):
+        super().__init__(libraryPath)
+        self.dbname = "tudo"
+    
+    def initializeNewDatabase(self):
+        newTudo = input("do you really want to create a new Tudo? (y/n)")
+        if newTudo == "y":
+            subprocess.run([f"dropdb tudo"], shell=True)
+            self.killAllServerInstances()
+            self.initNewDatabaseCluster()
+            
+            self.startNewServer()
+            self.newDatabase(self.dbname)
+            self.connectToDatabase(self.dbname)
+
+    def setupTables(self):
+        self.killAllServerInstances()
         self.startNewServer()
-        self.dbnames = []
-        self.conn = None
-        self.cur = None
+        self.connectToDatabase(self.dbname)
+        self.addTable("soundfile_analysis")
+        print(self.dumpAllTables(self.dbname))
+        column =("instrument", "TEXT")
+        for column in [
+                ("instrument", "TEXT"),
+                ("path", "TEXT"),
+                ("durationSec", "FLOAT"), ("sampleRate", "INT"),
+                ("peakAmplitudedB", "FLOAT"),
+                ("mainPitchHz", "FLOAT"),
+                ("spectralDensity", "FLOAT"),
+                ("roughness", "FLOAT"),
+                ("centroidMostCommon", "FLOAT"),
+                ("flatnessMedian", "FLOAT")]:
+                self.addColumn(
+                    "soundfile_analysis", 
+                    column[0], 
+                    column[1])
 
-    def initNewDatabaseCluster(self):
-        subprocess.run([f"initdb -D {self.librayPath}"], shell=True)
+        self.addTable("instruments")
+        for column in [
+            ("lowestNoteMidi","FLOAT"),
+            ("highestNoteMidi","FLOAT"),
+            ("commonTuningReference","JSON"),
+            ("lowestFreqHz","FLOAT"),
+            ("highestFreqHz","FLOAT"),
+            ("numSystems","INT"),
+            ("microtones", "BOOL"),
+            ("transpositionSemitines", "FLOAT"),
+            ("chords", "BOOL"),
+            ("multiphonices", "BOOL"),
+            ("numSystems", "INT"),
+            ("materials", "JSON"),
+            ("playingTechniques", "JSON")
+            ]:
+            self.addColumn("instruments", 
+                    column[0], 
+                    column[1])
 
-    def checkServerStatus(self):
-        subprocess.run([f"pg_ctl -D {self.librayPath} status"], shell=True)
 
-    def startNewServer(self):
-        subprocess.run([f"pg_ctl -D {self.librayPath} start"], shell=True)
-
-    def stopServer(self):
-        subprocess.run([f"pg_ctl -D {self.librayPath} stop"], shell=True)
-
-    def newDatabase(self,dbname = "mydb"):
-        self.dbnames.append(dbname)
-        subprocess.run([f"createdb {dbname}"], shell=True)
-
-    def connectToServer(self, dbname = "mydb"):
-        self.conn = psycopg2.connect(dbname= dbname)
-        self.cur = self.conn.cursor()
-        return
-
-    def executeQuery(self, query, vars):
-        if vars:
-            self.cur.execute(query, vars)
-        else:
-            self.cur.execute(query)
-        self.conn.commit()
+    def connect(self):
+        self.killAllServerInstances()
+        self.startNewServer()
+        self.connectToDatabase(self.dbname)
