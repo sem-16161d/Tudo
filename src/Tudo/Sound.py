@@ -56,6 +56,7 @@ class Sound:
         self.freq_list, self.mag_list, self.allpairs,self.sineHistogram = None,None,None,None
         self.mainPitchHz, self.spectralDensity, self.roughness, self.spectralCentroid=None, None, None, None
         self.flatnessMedian = None
+        self.analysisDict = {}
 
 
     def sine_features_frame(self, frame, detectionThreshold=-60, sortBy="magnitude", maxPeaks=None):
@@ -206,6 +207,17 @@ class Sound:
         self.getSpectralCentroid()
         self.getFlatness()
         self.calculateDynamicEnv(3,3,resolution=10)
+        self.analysisDict = {
+            "path": self.path,
+            "durationSec": self.durationSec,
+            "sampleRate": self.samplerate,
+            "peakAmplitudedB": self.peakdB,
+            "mainPitchHz": self.mainPitchHz,
+            "spectralDensity": self.spectralDensity,
+            "roughness": self.roughness,
+            "centroidMostCommon": self.spectralCentroid,
+            "flatnessMedian": self.flatnessMedian
+        }
         print("Sound.analyse: done!")
 
     def __repr__(self):

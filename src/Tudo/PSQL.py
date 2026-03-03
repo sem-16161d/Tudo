@@ -1,4 +1,5 @@
 #Tudo.py
+import json
 from os import wait
 import psycopg2
 import subprocess
@@ -114,7 +115,21 @@ class PSQL():
         self.executeQuery(cmd, (tableName,))
         return [row[0] for row in self.cur.fetchall()]  # pyright: ignore[reportOptionalMemberAccess]
     
+    def updateEntry(self, id, columnName, tableName, value):
+        value = formatValue(value)
+        cmd = (
+            f"UPDATE {tableName} SET {columnName} = {value} where ID = {id}")
+        self.executeQuery(cmd)
+
     def dumpAllEntries(self, tableName = "tableNo1"):
         self.executeQuery(f"SELECT * FROM {tableName}")
         for row in self.cur.fetchall():  # pyright: ignore[reportOptionalMemberAccess]
             print(row)
+
+def formatValue(value):
+    if isinstance(value, str):
+        return f"'{value}'"
+    elif isinstance(value, list):
+        return f"'{json.dumps(value)}'"   # JSON string for SQL
+    else:
+        return str(value)
