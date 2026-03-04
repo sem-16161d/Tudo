@@ -1,7 +1,8 @@
 #Tudo.py
-from os import wait
+import os
 import subprocess
 from Tudo.PSQL import PSQL
+from Tudo.Sound import Sound
 
 class Tudo(PSQL):
     def __init__(
@@ -30,7 +31,7 @@ class Tudo(PSQL):
         self.addTable("soundfile_analysis")
         print(self.dumpAllTables(self.dbname))
         for column in [
-                ("instrument", "TEXT"),
+                ("identifiers", "JSON"),
                 ("path", "TEXT"),
                 ("durationSec", "FLOAT"), 
                 ("sampleRate", "INT"),
@@ -84,5 +85,20 @@ class Tudo(PSQL):
         """
         self.executeQuery(cmd)
 
-    def newEntryFromSound(self, pathToSfile: str):
-        return
+    def newEntryFromSound(self, pathToSfile: str, identifiers = []):
+        sound = Sound(pathToSfile)
+        sound.analyse()
+        sound.addIntentifiers(identifiers)
+        self.newEntry("soundfile_analysis")
+        for key in sound.analysisDict:
+            self.updateEntry(
+                self.lastID["soundfile_analysis"],
+                key,
+                "soundfile_analysis",
+                sound.analysisDict[key])
+
+    def newEntriesFromFolder(self, pathToFolder: str, identifiers = []):
+        for filename in os.listdir(pathToFolder):
+            filePath = os.path.join(pathToFolder, filename)
+            if os.path.isfile(filePath) and filename.lower().endswith(('.wav')):
+                self.newEntryFromSound(filePath, identifiers)

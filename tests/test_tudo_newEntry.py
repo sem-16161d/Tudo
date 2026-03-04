@@ -7,10 +7,10 @@ t.getAllColumnsAndTables()
 # for _ in range(20): t.newEntry()
 
 
-# for i in range(18):
-#     t.deleteEntryByID(i+1, "soundfile_analysis")
-t.newEntry("soundfile_analysis")
-print(t.lastID)
+for i in range(70):
+    t.deleteEntryByID(i+1, "soundfile_analysis")
+# t.newEntry("soundfile_analysis")
+# print(t.lastID)
 
 t.dumpAllEntries("soundfile_analysis")
 t.killAllServerInstances()

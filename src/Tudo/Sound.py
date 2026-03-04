@@ -56,7 +56,7 @@ class Sound:
         self.freq_list, self.mag_list, self.allpairs,self.sineHistogram = None,None,None,None
         self.mainPitchHz, self.spectralDensity, self.roughness, self.spectralCentroid=None, None, None, None
         self.flatnessMedian = None
-        self.analysisDict = {}
+        self.analysisDict = {"identifiers":[]}
 
 
     def sine_features_frame(self, frame, detectionThreshold=-60, sortBy="magnitude", maxPeaks=None):
@@ -166,6 +166,7 @@ class Sound:
             for fl,ml in zip(self.freq_list, self.mag_list) 
             for f, m in zip(fl, ml) ]
         clusters = cluster_by_cents(self.allpairs,tolerance_cents=toleranceCENTS)
+        
         clusters_sorted = sorted(
             clusters,key=lambda c: c["dominance"],reverse=True)
         self.sineHistogram = [(c["center"], c["relative"]) for c in clusters_sorted[:16]]
@@ -208,6 +209,7 @@ class Sound:
         self.getFlatness()
         self.calculateDynamicEnv(3,3,resolution=10)
         self.analysisDict = {
+            "identifiers": self.analysisDict["identifiers"],
             "path": self.path,
             "durationSec": self.durationSec,
             "sampleRate": self.samplerate,
@@ -219,6 +221,13 @@ class Sound:
             "flatnessMedian": self.flatnessMedian
         }
         print("Sound.analyse: done!")
+
+    def addIdentifier (self, identifier):
+        self.analysisDict["identifiers"].append(identifier)
+
+    def addIntentifiers(self, iterable):
+        for i in iterable:
+            self.addIdentifier(i)
 
     def __repr__(self):
         """
@@ -240,7 +249,7 @@ class Sound:
 
 
 def cents_distance(f1, f2):
-    return 1200 * np.log2(f1 / f2)
+    return 1200 * np.log2(f1 / f2+0.00001)
 
 
 
@@ -254,7 +263,6 @@ def cluster_by_cents(pairs, tolerance_cents=20):
 
         for cluster in clusters:
             center = cluster["center"]
-
             if abs(cents_distance(f, center)) <= tolerance_cents:
                 cluster["freqs"].append(f)
                 cluster["mags"].append(mag_db)
