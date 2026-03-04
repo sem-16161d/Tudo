@@ -52,5 +52,5 @@ t.getAllColumnsAndTables()
 #                 "instruments",
 #                 v)
 
-t.deleteEntryByID(1, "instruments")
+
 t.dumpAllEntries("instruments")
