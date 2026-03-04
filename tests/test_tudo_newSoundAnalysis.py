@@ -17,12 +17,9 @@ t.getAllColumnsAndTables()
 #         "soundfile_analysis",
 #         s.analysisDict[key])
 
-t.newEntryFromSound(
-        "/Users/sraw/Documents/SAMPLES/TUDO/SAMPLES/ACOUSTIC_INSTRUMENTS/STRING/VIOLIN/ORDINARIO/vln-m154-A4-f-Hhv81.wav",
-        ("violin", "ordinario"))
 
 t.newEntriesFromFolder("SAMPLES/ACOUSTIC_INSTRUMENTS/STRING/VIOLA/artificial_harmonic",
-("violin", "ordinario"))
+("violin", "artificial_harmonic"))
 
 # t.newEntry("instruments")
 
