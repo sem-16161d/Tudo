@@ -54,6 +54,10 @@ class Tudo(PSQL):
             ("commonTuningReference","JSON"),
             ("lowestFreqHz","FLOAT"),
             ("highestFreqHz","FLOAT"),
+            ("physicalDynamicdBmin", "FLOAT"),
+            ("physicalDynamicdBmax", "FLOAT"),
+            ("writtenDynMin", "TEXT"),
+            ("writtenDynMax", "TEXT"),
             ("numSystems","INT"),
             ("microtones", "BOOL"),
             ("transpositionSemitones", "FLOAT"),
@@ -61,7 +65,8 @@ class Tudo(PSQL):
             ("multiphonics", "BOOL"),
             ("numSystems", "INT"),
             ("materials", "JSON"),
-            ("playingTechniques", "JSON")
+            ("playingTechniques", "JSON"),
+            ("possibleClefs", "JSON"),
             ]:
             self.addColumn("instruments", 
                     column[0], 

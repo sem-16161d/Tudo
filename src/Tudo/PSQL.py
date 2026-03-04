@@ -62,6 +62,10 @@ class PSQL():
             self.cur.execute(query)  # pyright: ignore[reportOptionalMemberAccess]
         self.conn.commit()  # pyright: ignore[reportOptionalMemberAccess]
 
+    def executeAndReturn(self, query, vars = ()):
+        self.executeQuery(query, vars)
+        return self.cur.fetchall()
+
     def addTable(self, tableName = "tableNo1"):
         cmd = (f"CREATE TABLE {tableName} (id serial PRIMARY KEY)")
         self.tableNames.append(tableName)
