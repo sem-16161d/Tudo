@@ -23,13 +23,25 @@ class Tudo(PSQL):
             self.newDatabase(self.dbname)
             self.connectToDatabase(self.dbname)
             
+            
+
+    def setupTableInstrumentCharacteristic(self, instrument = "dummy"):
+        tableName = instrument+"_characteristics"
+        self.addTable(tableName)
+        for column in [
+            ("playingtechnique", "TEXT"),
+            ("roughnessMedian", "FLOAT"),
+            ("flatnessMediam", "FLOAT"),
+            ("spectraldensity", "FLOAT"),
+            ("pitchcentroidratio", "FLOAT"),
+        ]:
+            self.addColumn(tableName,column[0], column[1])
 
     def setupTables(self):
         self.killAllServerInstances()
         self.startNewServer()
         self.connectToDatabase(self.dbname)
         self.addTable("soundfile_analysis")
-        print(self.dumpAllTables(self.dbname))
         for column in [
                 ("identifiers", "JSON"),
                 ("path", "TEXT"),
@@ -40,7 +52,9 @@ class Tudo(PSQL):
                 ("spectralDensity", "FLOAT"),
                 ("roughness", "FLOAT"),
                 ("centroidMostCommon", "FLOAT"),
+                ("pitchcentroidratio", "FLOAT"),
                 ("flatnessMedian", "FLOAT"),
+                ("transposability", "INT"),
                 ("created_at","TIMESTAMP DEFAULT CURRENT_TIMESTAMP")]:
                 self.addColumn(
                     "soundfile_analysis", 
@@ -90,8 +104,8 @@ class Tudo(PSQL):
         """
         self.executeQuery(cmd)
 
-    def newEntryFromSound(self, pathToSfile: str, identifiers = []):
-        sound = Sound(pathToSfile)
+    def newEntryFromSound(self, pathToSfile: str, identifiers = [], transposability = 1):
+        sound = Sound(pathToSfile, transposability=transposability)
         sound.analyse()
         sound.addIntentifiers(identifiers)
         self.newEntry("soundfile_analysis")
@@ -102,8 +116,8 @@ class Tudo(PSQL):
                 "soundfile_analysis",
                 sound.analysisDict[key])
 
-    def newEntriesFromFolder(self, pathToFolder: str, identifiers = []):
+    def newEntriesFromFolder(self, pathToFolder: str, identifiers = [],transposability = 1):
         for filename in os.listdir(pathToFolder):
             filePath = os.path.join(pathToFolder, filename)
             if os.path.isfile(filePath) and filename.lower().endswith(('.wav')):
-                self.newEntryFromSound(filePath, identifiers)
+                self.newEntryFromSound(filePath, identifiers,transposability)

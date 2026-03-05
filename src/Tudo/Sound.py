@@ -22,6 +22,7 @@ class Sound:
         self, path = (48000, 3.14, "sine", 440),
         #self, path = (48000, 3.14, "white"),
         *,
+        transposability = 1,# 0 = chromatic, -1 = false, 1 = freely
         windowSize = 2**12, hopLength= 2**11):
         """
         Load and analyze a sound file.
@@ -56,7 +57,7 @@ class Sound:
         self.freq_list, self.mag_list, self.allpairs,self.sineHistogram = None,None,None,None
         self.mainPitchHz, self.spectralDensity, self.roughness, self.spectralCentroid=None, None, None, None
         self.flatnessMedian = None
-        self.analysisDict = {"identifiers":[]}
+        self.analysisDict = {"identifiers":[], "transposability": transposability}
 
 
     def sine_features_frame(self, frame, detectionThreshold=-60, sortBy="magnitude", maxPeaks=None):
@@ -206,18 +207,22 @@ class Sound:
         self.getPeakAmplitude()
         self.getRoughness()
         self.getSpectralCentroid()
+        self.pitchcentroidratio =  self.spectralCentroid/self.mainPitchHz
         self.getFlatness()
         self.calculateDynamicEnv(3,3,resolution=10)
         self.analysisDict = {
             "identifiers": self.analysisDict["identifiers"],
+            "transposability": self.analysisDict["transposability"],
             "path": self.path,
             "durationSec": self.durationSec,
             "sampleRate": self.samplerate,
             "peakAmplitudedB": self.peakdB,
             "mainPitchHz": self.mainPitchHz,
+            "centroidMostCommon": self.spectralCentroid,
+            "pitchcentroidratio":self.pitchcentroidratio,
             "spectralDensity": self.spectralDensity,
             "roughness": self.roughness,
-            "centroidMostCommon": self.spectralCentroid,
+            
             "flatnessMedian": self.flatnessMedian
         }
         print("Sound.analyse: done!")
@@ -235,15 +240,16 @@ class Sound:
         """
         return (
             f"\n{self.__class__.__name__}:\n"
-            f"   path           : {self.path}\n"
-            f"   durationSec    : {self.durationSec:.3f}\n"#dyn={self.dynamicdB:.1f} dB, "
-            f"   numSamples     : {self.numSamples}\n"
-            f"   peakdB         : {self.peakdB}\n"
-            f"   mainPitchHz    : {self.mainPitchHz}\n"
-            f"   spectralDensity: {self.spectralDensity}\n"
-            f"   roughness      : {self.roughness}\n"
-            f"   centroid(occ)  : {self.spectralCentroid}\n"
-            f"   flatness(mdn)  : {self.flatnessMedian}\n"
+            f"   path              : {self.path}\n"
+            f"   durationSec       : {self.durationSec:.3f}\n"#dyn={self.dynamicdB:.1f} dB, "
+            f"   numSamples        : {self.numSamples}\n"
+            f"   peakdB            : {self.peakdB}\n"
+            f"   mainPitchHz       : {self.mainPitchHz}\n"
+            f"   spectralDensity   : {self.spectralDensity}\n"
+            f"   roughness         : {self.roughness}\n"
+            f"   centroid(occ)     : {self.spectralCentroid}\n"
+            f"   pitchcentroidratio: {self.pitchcentroidratio}\n"
+            f"   flatness(mdn)     : {self.flatnessMedian}\n"
             
         )
 

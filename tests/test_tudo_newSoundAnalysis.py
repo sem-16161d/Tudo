@@ -19,7 +19,7 @@ t.getAllColumnsAndTables()
 
 
 t.newEntriesFromFolder("SAMPLES/ACOUSTIC_INSTRUMENTS/STRING/VIOLA/artificial_harmonic",
-("violin", "artificial_harmonic"))
+("viola", "artificial_harmonic"))
 
 # t.newEntry("instruments")
 
