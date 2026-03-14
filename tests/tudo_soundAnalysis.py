@@ -1,21 +1,28 @@
+from psycopg2.extras import Json
 from GreasyPidgin.Pitch import mtof
 from Tudo.Tudo import Tudo
 from GreasyPidgin.Instruments import STANDARD_INSTRUMENTS
 
 t = Tudo("/Users/sraw/Documents/SAMPLES/TUDO/PSQL/")
 t.connect()
-t.getAllColumnsAndTables()
+# t.getAllColumnsAndTables()
+# for cn in t.columnNames:
+#         print(cn, t.columnNames[cn])
+# path = "SAMPLES/ACOUSTIC_INSTRUMENTS/STRING/VIOLA/behind_the_bridge"
+idents = [ "viola",
+        "behind_the_bridge"]
 
-path = "SAMPLES/ACOUSTIC_INSTRUMENTS/STRING/VIOLA/artificial_harmonic_tremolo"
-idents = (
-        "viola",
-        "artificial_harmonic_tremolo"
-)
-transpo = 1
-t.newEntriesFromFolder(path,
-idents,transpo)
+# transpo = -1
+# t.newEntriesFromFolder(path,
+# idents,transpo)
 
+r = t.executeAndReturn("""
+    SELECT roughness
+    FROM soundfile_analysis
+    WHERE identifiers::jsonb @> %s::jsonb
+""", idents)
 
+print(r)
 
 # # t.newEntry("instruments")
 # # for c, v in [

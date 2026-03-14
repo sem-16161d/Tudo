@@ -1,4 +1,5 @@
 #Tudo.py
+from psycopg2.extras import Json
 import json
 from os import wait
 import psycopg2
@@ -55,12 +56,16 @@ class PSQL():
         self.cur = self.conn.cursor()
         return
     
-    def executeQuery(self, query, vars = ()):
-        if len(vars) > 0:
-            self.cur.execute(query, vars)  # pyright: ignore[reportOptionalMemberAccess]
+    def executeQuery(self, query, vars=None):
+        if vars is None:
+            params = None
+        elif isinstance(vars, (tuple, list)):
+            params = (Json(vars),)
         else:
-            self.cur.execute(query)  # pyright: ignore[reportOptionalMemberAccess]
-        self.conn.commit()  # pyright: ignore[reportOptionalMemberAccess]
+            params = (vars,)  # wrap single value
+
+        self.cur.execute(query, params)
+        self.conn.commit()
 
     def executeAndReturn(self, query, vars = ()):
         self.executeQuery(query, vars)
@@ -100,7 +105,7 @@ class PSQL():
             AND NOT attisdropped
             ORDER BY attnum
         """
-        self.executeQuery(cmd, (tableName,))
+        self.executeQuery(cmd, tableName)
         return [row[:2] for row in self.cur.fetchall()]  # pyright: ignore[reportOptionalMemberAccess]
     
     def getColumnNamesFromTable(self, tableName = "tableNo1"):
