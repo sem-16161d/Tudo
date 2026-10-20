@@ -7,7 +7,7 @@ from Tudo.Sound import Sound
 class Tudo(PSQL):
     def __init__(
         self,
-        libraryPath = "/Users/sraw/Documents/SAMPLES/TUDO/PSQL/"):
+        libraryPath = "/Users/sraw/Documents/SAMPLES/TUDO/DB/"):
         super().__init__(libraryPath)
         self.dbname = "tudo"
         self.lastID = {"soundfile_analysis": 0,"instruments":0}
@@ -31,7 +31,7 @@ class Tudo(PSQL):
         for column in [
             ("playingtechnique", "TEXT"),
             ("roughnessMedian", "FLOAT"),
-            ("flatnessMediam", "FLOAT"),
+            ("flatnessMedian", "FLOAT"),
             ("spectraldensity", "FLOAT"),
             ("pitchcentroidratio", "FLOAT"),
         ]:
@@ -55,6 +55,19 @@ class Tudo(PSQL):
                 ("pitchcentroidratio", "FLOAT"),
                 ("flatnessMedian", "FLOAT"),
                 ("transposability", "INT"),
+                # pitch fluctuation
+                ("pitchFluctRate", "FLOAT"),
+                ("pitchFluctDepth", "FLOAT"),
+                ("pitchFluctStrength", "FLOAT"),
+                # amplitude fluctuation
+                ("ampFluctRate", "FLOAT"),
+                ("ampFluctDepth", "FLOAT"),
+                ("ampFluctStrength", "FLOAT"),
+                # spectral fluctuation
+                ("spectFluctMean", "FLOAT"),
+                ("spectFluctVariance", "FLOAT"),
+                ("spectFluctRate", "FLOAT"),
+                ("spectFluctStrength", "FLOAT"),
                 ("created_at","TIMESTAMP DEFAULT CURRENT_TIMESTAMP")]:
                 self.addColumn(
                     "soundfile_analysis", 
@@ -86,8 +99,6 @@ class Tudo(PSQL):
                     column[0], 
                     column[1])
 
-    # def newEntry(self, tableName="soundfile_analysis"):
-    #     self.lastID[tableName] = super().newEntry(tableName)
 
     def connect(self):
         self.killAllServerInstances()
@@ -117,7 +128,10 @@ class Tudo(PSQL):
                 sound.analysisDict[key])
 
     def newEntriesFromFolder(self, pathToFolder: str, identifiers = [],transposability = 1):
-        for filename in os.listdir(pathToFolder):
+        numSounds = len(os.listdir(pathToFolder))
+        for i,filename in enumerate(os.listdir(pathToFolder)):
+            print(f"Tudo: Analysing File {i}/{numSounds}")
             filePath = os.path.join(pathToFolder, filename)
             if os.path.isfile(filePath) and filename.lower().endswith(('.wav')):
                 self.newEntryFromSound(filePath, identifiers,transposability)
+            

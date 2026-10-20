@@ -17,7 +17,5 @@ dependencies = [
   "scipy",
   "GreasyPidgin",
   "librosa",
-  "itertools",
-  "math", "random",
   "psycopg2"
 ] 

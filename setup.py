@@ -12,9 +12,8 @@ setup(
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
     install_requires=[
-        'numpy', 'librosa', 'scipy', 'math','itertools',
-        'GreasyPidgin', 'random','psycopg2'
-        # List your project dependencies here, e.g., 'numpy', 'requests'
+        'numpy', 'librosa', 'scipy', 
+        'GreasyPidgin', 'psycopg2'
     ],
     classifiers=[
         'Programming Language :: Python :: 3',

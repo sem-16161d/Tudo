@@ -12,7 +12,7 @@ class PSQL():
         *,
         autostart= False):
         self.librayPath = libraryPath
-        self.tableNames = []
+        # self.tableNames = []
         self.columnNames = dict()
         self.dbname = None
         self.conn = None
@@ -73,12 +73,12 @@ class PSQL():
 
     def addTable(self, tableName = "tableNo1"):
         cmd = (f"CREATE TABLE {tableName} (id serial PRIMARY KEY)")
-        self.tableNames.append(tableName)
+        # self.tableNames.append(tableName)
         self.executeQuery(cmd)
 
     def dropTable(self, tableName = "tableNo1"):
         cmd = (f"DROP TABLE {tableName}")
-        self.tableNames.remove(tableName)
+        # self.tableNames.remove(tableName)
         self.executeQuery(cmd)
     
     def dumpAllTables(self, dbname = "mydb"):

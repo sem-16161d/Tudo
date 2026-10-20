@@ -8,7 +8,7 @@ from random import random
 # Example n-dimensional data
 # --------------------------
 n_dims = 8
-dataset = [[random() for _ in range(n_dims)] for _ in range(1000)]
+dataset = [[random() for _ in range(n_dims)] for _ in range(50)]
 testsample = [random() for _ in range(n_dims)]
 k = 10
 

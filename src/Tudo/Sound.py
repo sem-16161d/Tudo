@@ -17,6 +17,57 @@ def _get_sample_rate(path):
     wav = wavfile.read(path)
     return int(wav[0])
 
+
+# --------------------------
+# Fluctuation helpers
+# --------------------------
+
+def _autocorr_peak(signal, sr, min_hz=2.0, max_hz=20.0):
+    """
+    Find the dominant periodic rate in a frame-rate signal via autocorrelation.
+
+    Parameters
+    ----------
+    signal   : 1D numpy array (one value per hop frame)
+    sr       : frame rate in Hz  (samplerate / hopLength)
+    min_hz   : lower bound for oscillation search (default 2 Hz)
+    max_hz   : upper bound for oscillation search (default 20 Hz)
+
+    Returns
+    -------
+    rate_hz  : dominant oscillation frequency (Hz), or 0 if none found
+    strength : normalised autocorrelation peak value [0, 1]
+    """
+    signal = signal - np.mean(signal)
+    if np.std(signal) < 1e-10:
+        return 0.0, 0.0
+
+    # Lag range in samples at the given frame rate
+    lag_min = max(1, int(sr / max_hz))
+    lag_max = int(sr / min_hz)
+
+    if lag_max >= len(signal):
+        lag_max = len(signal) - 1
+    if lag_min >= lag_max:
+        return 0.0, 0.0
+
+    # Normalised autocorrelation
+    acf = np.correlate(signal, signal, mode='full')
+    acf = acf[len(acf) // 2:]          # keep positive lags
+    acf /= (acf[0] + 1e-12)            # normalise to [−1, 1]
+
+    window = acf[lag_min:lag_max + 1]
+    if len(window) == 0:
+        return 0.0, 0.0
+
+    peak_idx = np.argmax(window)
+    strength = float(np.clip(window[peak_idx], 0.0, 1.0))
+    lag_samples = peak_idx + lag_min
+    rate_hz = float(sr / lag_samples) if lag_samples > 0 else 0.0
+
+    return rate_hz, strength
+
+
 class Sound:
     def __init__(
         self, path = (48000, 3.14, "sine", 440),
@@ -57,6 +108,12 @@ class Sound:
         self.freq_list, self.mag_list, self.allpairs,self.sineHistogram = None,None,None,None
         self.mainPitchHz, self.spectralDensity, self.roughness, self.spectralCentroid=None, None, None, None
         self.flatnessMedian = None
+
+        # fluctuation results (populated by getFluctuations)
+        self.pitchFluctuation     = None
+        self.amplitudeFluctuation = None
+        self.spectralFluctuation  = None
+
         self.analysisDict = {"identifiers":[], "transposability": transposability}
 
 
@@ -203,6 +260,172 @@ class Sound:
         self.flatnessMedian = self.flatnessEnv.median_y()
         self.flatnessMean = self.flatnessEnv.mean_y()
 
+    # --------------------------
+    # Fluctuation detectors
+    # --------------------------
+
+    def getPitchFluctuation(self, minHz=2.0, maxHz=20.0):
+        """
+        Measure periodic pitch fluctuation (vibrato, trills, flutter).
+
+        Tracks the dominant-magnitude sinusoidal peak per STFT frame in cents
+        relative to the median pitch, then runs autocorrelation to find the
+        oscillation rate and depth.
+
+        Requires getSineFeature() to have been called first (falls back to
+        spectral centroid track if not available).
+
+        Stores
+        ------
+        self.pitchFluctuation : dict
+            rate_hz   — dominant oscillation rate in Hz (0 if none found)
+            depth_cents — peak-to-peak fluctuation depth in cents
+            strength  — normalised autocorrelation peak [0, 1]; higher = more
+                        periodic. Use this as the primary "vibrato" indicator.
+        """
+        frame_rate = self.samplerate / self.hopLength
+
+        # --- build per-frame dominant-frequency track ---
+        if self.freq_list is not None and len(self.freq_list) > 0:
+            pitch_track = []
+            for freqs, mags in zip(self.freq_list, self.mag_list):
+                if len(freqs) > 0:
+                    pitch_track.append(float(freqs[0]))   # already sorted by magnitude
+                else:
+                    pitch_track.append(np.nan)
+            pitch_track = np.array(pitch_track, dtype=float)
+        elif hasattr(self, 'spectralCentroids'):
+            pitch_track = np.array(self.spectralCentroids, dtype=float)
+        else:
+            if self.S is None:
+                self.stft()
+            self.spectralCentroids = spectral_centroid(S=self.S)[0]
+            pitch_track = np.array(self.spectralCentroids, dtype=float)
+
+        # Replace NaN / zero with median so they don't poison the autocorr
+        median_pitch = np.nanmedian(pitch_track[pitch_track > 0])
+        pitch_track = np.where(
+            (np.isnan(pitch_track)) | (pitch_track <= 0),
+            median_pitch,
+            pitch_track
+        )
+
+        # Convert to cents relative to median — makes depth perceptually meaningful
+        cents_track = 1200.0 * np.log2(pitch_track / (median_pitch + 1e-12))
+
+        depth_cents = float(np.percentile(cents_track, 95) - np.percentile(cents_track, 5))
+        rate_hz, strength = _autocorr_peak(cents_track, frame_rate, minHz, maxHz)
+
+        self.pitchFluctuation = {
+            "rate_hz":     round(rate_hz, 3),
+            "depth_cents": round(depth_cents, 3),
+            "strength":    round(strength, 4),
+        }
+        return self.pitchFluctuation
+
+    def getAmplitudeFluctuation(self, minHz=2.0, maxHz=20.0):
+        """
+        Measure periodic amplitude fluctuation (tremolo, breath pulses).
+
+        Computes RMS per hop frame in dB, then runs autocorrelation to find the
+        oscillation rate and depth.
+
+        Stores
+        ------
+        self.amplitudeFluctuation : dict
+            rate_hz  — dominant oscillation rate in Hz (0 if none found)
+            depth_dB — peak-to-peak RMS fluctuation depth in dB
+            strength — normalised autocorrelation peak [0, 1]
+        """
+        frame_rate = self.samplerate / self.hopLength
+
+        # RMS per hop frame
+        frames = librosa.util.frame(
+            self.soundfile,
+            frame_length=self.windowSize,
+            hop_length=self.hopLength)
+        rms = np.sqrt(np.mean(frames ** 2, axis=0))
+        rms_db = 20.0 * np.log10(np.maximum(rms, 1e-12))
+
+        depth_dB = float(np.percentile(rms_db, 95) - np.percentile(rms_db, 5))
+        rate_hz, strength = _autocorr_peak(rms_db, frame_rate, minHz, maxHz)
+
+        self.amplitudeFluctuation = {
+            "rate_hz":  round(rate_hz, 3),
+            "depth_dB": round(depth_dB, 3),
+            "strength": round(strength, 4),
+        }
+        return self.amplitudeFluctuation
+
+    def getSpectralFluctuation(self, minHz=2.0, maxHz=20.0):
+        """
+        Measure frame-to-frame spectral change (timbral flutter, multiphonic
+        instability).
+
+        Computes cosine distance between adjacent normalised magnitude frames,
+        giving a spectral flux curve. Summary statistics and autocorrelation
+        capture both the overall amount of change and whether it is periodic.
+
+        Stores
+        ------
+        self.spectralFluctuation : dict
+            mean     — mean spectral flux [0, 1]; 0 = static, 1 = maximally
+                       different every frame
+            variance — variance of the flux curve; high = irregular change
+            rate_hz  — dominant periodic rate in the flux signal (Hz)
+            strength — normalised autocorrelation peak [0, 1]
+        """
+        frame_rate = self.samplerate / self.hopLength
+
+        if self.S is None:
+            self.stft()
+
+        # Normalise each frame to unit L2 norm (so energy differences don't
+        # dominate — we care about spectral *shape* change)
+        mag = np.abs(self.S).T                            # (frames, bins)
+        norms = np.linalg.norm(mag, axis=1, keepdims=True)
+        mag_norm = mag / (norms + 1e-12)
+
+        # Cosine distance between adjacent frames  =  1 − cosine_similarity
+        dot = np.sum(mag_norm[:-1] * mag_norm[1:], axis=1)
+        flux = 1.0 - np.clip(dot, -1.0, 1.0)             # [0, 2], typically [0, 1]
+
+        mean_flux     = float(np.mean(flux))
+        variance_flux = float(np.var(flux))
+        rate_hz, strength = _autocorr_peak(flux, frame_rate, minHz, maxHz)
+
+        self.spectralFluctuation = {
+            "mean":     round(mean_flux, 4),
+            "variance": round(variance_flux, 6),
+            "rate_hz":  round(rate_hz, 3),
+            "strength": round(strength, 4),
+        }
+        return self.spectralFluctuation
+
+    def getFluctuations(self, minHz=2.0, maxHz=20.0):
+        """
+        Run all three fluctuation detectors in one call.
+        Ensures STFT and sine features are computed first.
+
+        Returns
+        -------
+        dict with keys 'pitch', 'amplitude', 'spectral'
+        """
+        if self.D is None:
+            self.stft()
+        if self.freq_list is None:
+            self.getSineFeature()
+
+        self.getPitchFluctuation(minHz, maxHz)
+        self.getAmplitudeFluctuation(minHz, maxHz)
+        self.getSpectralFluctuation(minHz, maxHz)
+
+        return {
+            "pitch":     self.pitchFluctuation,
+            "amplitude": self.amplitudeFluctuation,
+            "spectral":  self.spectralFluctuation,
+        }
+
     def analyse(self):
         self.getPeakAmplitude()
         self.getRoughness()
@@ -210,6 +433,7 @@ class Sound:
         self.pitchcentroidratio =  self.spectralCentroid/self.mainPitchHz
         self.getFlatness()
         self.calculateDynamicEnv(3,3,resolution=10)
+        self.getFluctuations()
         self.analysisDict = {
             "identifiers": self.analysisDict["identifiers"],
             "transposability": self.analysisDict["transposability"],
@@ -222,8 +446,18 @@ class Sound:
             "pitchcentroidratio":self.pitchcentroidratio,
             "spectralDensity": self.spectralDensity,
             "roughness": self.roughness,
-            
-            "flatnessMedian": self.flatnessMedian
+            "flatnessMedian": self.flatnessMedian,
+            # fluctuations
+            "pitchFluctRate":      self.pitchFluctuation["rate_hz"],
+            "pitchFluctDepth":     self.pitchFluctuation["depth_cents"],
+            "pitchFluctStrength":  self.pitchFluctuation["strength"],
+            "ampFluctRate":        self.amplitudeFluctuation["rate_hz"],
+            "ampFluctDepth":       self.amplitudeFluctuation["depth_dB"],
+            "ampFluctStrength":    self.amplitudeFluctuation["strength"],
+            "spectFluctMean":      self.spectralFluctuation["mean"],
+            "spectFluctVariance":  self.spectralFluctuation["variance"],
+            "spectFluctRate":      self.spectralFluctuation["rate_hz"],
+            "spectFluctStrength":  self.spectralFluctuation["strength"],
         }
         print("Sound.analyse: done!")
 
@@ -238,10 +472,20 @@ class Sound:
         """
         call via print(Sound)
         """
+        pitch_f  = self.pitchFluctuation
+        amp_f    = self.amplitudeFluctuation
+        spec_f   = self.spectralFluctuation
+        pf = (f"rate={pitch_f['rate_hz']} Hz  depth={pitch_f['depth_cents']} ¢  str={pitch_f['strength']}"
+              if pitch_f else "not computed")
+        af = (f"rate={amp_f['rate_hz']} Hz  depth={amp_f['depth_dB']} dB  str={amp_f['strength']}"
+              if amp_f else "not computed")
+        sf = (f"mean={spec_f['mean']}  var={spec_f['variance']}  rate={spec_f['rate_hz']} Hz  str={spec_f['strength']}"
+              if spec_f else "not computed")
+
         return (
             f"\n{self.__class__.__name__}:\n"
             f"   path              : {self.path}\n"
-            f"   durationSec       : {self.durationSec:.3f}\n"#dyn={self.dynamicdB:.1f} dB, "
+            f"   durationSec       : {self.durationSec:.3f}\n"
             f"   numSamples        : {self.numSamples}\n"
             f"   peakdB            : {self.peakdB}\n"
             f"   mainPitchHz       : {self.mainPitchHz}\n"
@@ -250,7 +494,9 @@ class Sound:
             f"   centroid(occ)     : {self.spectralCentroid}\n"
             f"   pitchcentroidratio: {self.pitchcentroidratio}\n"
             f"   flatness(mdn)     : {self.flatnessMedian}\n"
-            
+            f"   pitchFluct        : {pf}\n"
+            f"   ampFluct          : {af}\n"
+            f"   spectralFluct     : {sf}\n"
         )
 
 
