@@ -11,6 +11,8 @@ from scipy.signal import find_peaks
 from itertools import combinations
 from Tudo.DynamicProfile import dynamicProfile
 from Tudo.SpectralFeatures import spectralFeatures, analysisDictEntries, _autocorrPeak
+from Tudo.MFCC import (summariseMfcc, timbreSlots, slotSettingsRecord,
+                       SUMMARY_DEFAULTS, ATTACK_DEFAULTS, SUSTAIN_DEFAULTS)
 
 def _get_sample_rate(path):
     """
@@ -53,7 +55,8 @@ class Sound:
         #self, path = (48000, 3.14, "white"),
         *,
         transposability = 1,# 0 = chromatic, -1 = false, 1 = freely
-        windowSize = 2**12, hopLength= 2**11):
+        windowSize = 2**12, hopLength= 2**11,
+        mfccSettings=None, attackSettings=None, sustainSettings=None):
         """
         Load and analyze a sound file.
         """
@@ -100,6 +103,12 @@ class Sound:
         # Peeters spectral features (populated by getSpectralFeatures)
         self.spectralFeatures = None
         self.spectralFeatureTracks = None
+
+        # MFCC settings (FluCoMa-style, see MFCC.py); dicts override the defaults
+        self.mfccSettings    = dict(SUMMARY_DEFAULTS, **(mfccSettings or {}))
+        self.attackSettings  = dict(ATTACK_DEFAULTS,  **(attackSettings or {}))
+        self.sustainSettings = dict(SUSTAIN_DEFAULTS, **(sustainSettings or {}))
+        self.timbreSlots = None
 
         self.analysisDict = {"identifiers":[], "transposability": transposability}
 
@@ -281,7 +290,23 @@ class Sound:
         self.spectralFeatures, self.spectralFeatureTracks = spectralFeatures(
             self.S, self.fftFrequencies, self.samplerate, self.hopLength,
             minHz=minHz, maxHz=maxHz)
+        self.spectralFeatures["mfcc"] = summariseMfcc(
+            self.soundfile, self.samplerate, self.mfccSettings,
+            minHz=minHz, maxHz=maxHz)
         return self.spectralFeatures
+
+    def getTimbreSlots(self):
+        """
+        Fixed-size MFCC matrices for neural-network training:
+            mfccAttack  (numCoeffs x numFrames) from the attack onset
+            mfccSustain (numCoeffs x numFrames) from the end of the attack
+        + attackStartSec, attackEndSec, logAttackTime.
+        Settings: self.attackSettings / self.sustainSettings (see MFCC.py).
+        """
+        self.timbreSlots = timbreSlots(
+            self.soundfile, self.samplerate,
+            self.attackSettings, self.sustainSettings)
+        return self.timbreSlots
 
     # --------------------------
     # Fluctuation detectors
@@ -494,6 +519,12 @@ class Sound:
         }
         # spectral features: spec<Feature>Main / FluctRate / FluctDepth / FluctStrength
         self.analysisDict.update(analysisDictEntries(self.spectralFeatures))
+        # timbre slots (MFCC matrices for training)
+        self.getTimbreSlots()
+        for k, v in self.timbreSlots.items():
+            self.analysisDict[k] = v.tolist() if isinstance(v, np.ndarray) else v
+        self.analysisDict["mfccSettings"] = slotSettingsRecord(
+            self.mfccSettings, self.attackSettings, self.sustainSettings)
         print("Sound.analyse: done!")
 
     def addIdentifier (self, identifier):

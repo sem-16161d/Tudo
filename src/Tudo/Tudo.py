@@ -15,6 +15,9 @@ class Tudo(PSQL):
         super().__init__(libraryPath)
         self.dbname = "tudo"
         self.lastID = {"soundfile_analysis": 0,"instruments":0}
+        # MFCC settings passed to every Sound (FluCoMa parameter names,
+        # see MFCC.py). Example: t.mfccSettings["attack"]["numFrames"] = 96
+        self.mfccSettings = {"summary": {}, "attack": {}, "sustain": {}}
     
     def initializeNewDatabase(self):
         newTudo = input("do you really want to create a new Tudo? (y/n)")
@@ -81,6 +84,8 @@ class Tudo(PSQL):
                 ("dynEffDur", "FLOAT"),
                 # Peeters spectral features (see SpectralFeatures.py)
                 *spectralColumns(),
+                # timbre slots: MFCC matrices for training (see MFCC.py)
+                *self.TIMBRE_SLOT_COLUMNS,
                 ("created_at","TIMESTAMP DEFAULT CURRENT_TIMESTAMP")]:
                 self.addColumn(
                     "soundfile_analysis", 
@@ -127,17 +132,53 @@ class Tudo(PSQL):
         """
         self.executeQuery(cmd)
 
+    def _sound(self, path, transposability=1):
+        """Sound with this Tudo's MFCC settings."""
+        return Sound(path, transposability=transposability,
+                     mfccSettings=self.mfccSettings.get("summary"),
+                     attackSettings=self.mfccSettings.get("attack"),
+                     sustainSettings=self.mfccSettings.get("sustain"))
+
+    def _columnTypes(self, tableName):
+        if not hasattr(self, "_colTypes"):
+            self._colTypes = {}
+        if tableName not in self._colTypes:
+            self._colTypes[tableName] = {n: t for n, t in self.dumpAllColumns(tableName)}
+        return self._colTypes[tableName]
+
+    def writeAnalysis(self, id, values, tableName="soundfile_analysis"):
+        """
+        Write a dict {column: value} into one row with a single
+        parameterised UPDATE. JSON columns get Json(), array columns
+        (REAL[]) get plain (nested) lists, numpy values are converted.
+        """
+        types = self._columnTypes(tableName)
+        names, params = [], []
+        for k, v in values.items():
+            typ = types.get(k.lower())
+            if typ is None:
+                print(f"Tudo: no column '{k}' in {tableName}, skipped")
+                continue
+            if isinstance(v, np.ndarray):
+                v = v.tolist()
+            elif isinstance(v, np.generic):
+                v = v.item()
+            if typ in ("json", "jsonb"):
+                v = Json(v)
+            names.append(k)
+            params.append(v)
+        if not names:
+            return
+        assignments = ", ".join(f"{n} = %s" for n in names)
+        self.cur.execute(f"UPDATE {tableName} SET {assignments} WHERE id = %s", params + [id])
+        self.conn.commit()
+
     def newEntryFromSound(self, pathToSfile: str, identifiers = [], transposability = 1):
-        sound = Sound(pathToSfile, transposability=transposability)
+        sound = self._sound(pathToSfile, transposability)
         sound.analyse()
         sound.addIntentifiers(identifiers)
         self.newEntry("soundfile_analysis")
-        for key in sound.analysisDict:
-            self.updateEntry(
-                self.lastID["soundfile_analysis"],
-                key,
-                "soundfile_analysis",
-                sound.analysisDict[key])
+        self.writeAnalysis(self.lastID["soundfile_analysis"], sound.analysisDict)
 
     def newEntriesFromFolder(self, pathToFolder: str, identifiers = [],transposability = 1):
         numSounds = len(os.listdir(pathToFolder))
@@ -218,13 +259,21 @@ class Tudo(PSQL):
         ("dynEffDur", "FLOAT"),
     ]
 
+    def addColumn(self, tableName="tableNo1", columnName="columnNo1", valueType="FLOAT"):
+        super().addColumn(tableName, columnName, valueType)
+        self._clearColumnCaches(tableName)
+
+    def _clearColumnCaches(self, tableName):
+        for cache in ("_searchColumns", "_colTypes"):
+            if hasattr(self, cache):
+                getattr(self, cache).pop(tableName, None)
+
     def addMissingColumns(self, columns, tableName="soundfile_analysis"):
         """Add columns to an existing table (skips the ones that exist)."""
         for name, typ in columns:
             self.executeQuery(
                 f"ALTER TABLE {tableName} ADD COLUMN IF NOT EXISTS {name} {typ}")
-        if hasattr(self, "_searchColumns"):
-            self._searchColumns.pop(tableName, None)
+        self._clearColumnCaches(tableName)
 
     def updateDynamicProfiles(self, onlyMissing=True, tableName="soundfile_analysis", **kwargs):
         """
@@ -256,12 +305,11 @@ class Tudo(PSQL):
 
     def updateSpectralFeatures(self, onlyMissing=True, tableName="soundfile_analysis", **kwargs):
         """
-        Compute the Peeters spectral features for entries already in the
-        database. onlyMissing=True skips entries that already have them.
-        kwargs go to Sound.getSpectralFeatures (minHz, maxHz).
+        Compute the Peeters spectral features (incl. MFCC summary) for
+        entries already in the database. onlyMissing=True skips entries
+        that already have them. kwargs go to Sound.getSpectralFeatures.
         """
-        cols = spectralColumns()
-        self.addMissingColumns(cols, tableName)
+        self.addMissingColumns(spectralColumns(), tableName)
         where = " WHERE specCentroidMain IS NULL" if onlyMissing else ""
         self.cur.execute(f"SELECT id, path FROM {tableName}{where} ORDER BY id")
         rows = self.cur.fetchall()
@@ -269,17 +317,12 @@ class Tudo(PSQL):
         for i, (id, path) in enumerate(rows):
             print(f"Tudo: spectral features {i+1}/{len(rows)}  {os.path.basename(path)}")
             try:
-                sound = Sound(path)
+                sound = self._sound(path)
                 values = analysisDictEntries(sound.getSpectralFeatures(**kwargs))
             except Exception as e:
                 print(f"Tudo: skipped id {id}: {e}")
                 continue
-            names = list(values)
-            assignments = ", ".join(f"{n} = %s" for n in names)
-            params = [Json(values[n]) if isinstance(values[n], list) else values[n] for n in names]
-            self.cur.execute(
-                f"UPDATE {tableName} SET {assignments} WHERE id = %s", params + [id])
-            self.conn.commit()
+            self.writeAnalysis(id, values, tableName)
 
     def reanalyseEntries(self, tableName="soundfile_analysis", ids=None):
         """
@@ -289,6 +332,7 @@ class Tudo(PSQL):
         """
         self.addMissingColumns(self.DYNAMIC_PROFILE_COLUMNS, tableName)
         self.addMissingColumns(spectralColumns(), tableName)
+        self.addMissingColumns(self.TIMBRE_SLOT_COLUMNS, tableName)
         sql = f"SELECT id, path, transposability FROM {tableName}"
         params = None
         if ids is not None:
@@ -300,19 +344,57 @@ class Tudo(PSQL):
         for i, (id, path, transp) in enumerate(rows):
             print(f"Tudo: reanalysing {i+1}/{len(rows)}  {os.path.basename(path)}")
             try:
-                sound = Sound(path, transposability=transp if transp is not None else 1)
+                sound = self._sound(path, transp if transp is not None else 1)
                 sound.analyse()
             except Exception as e:
                 print(f"Tudo: skipped id {id}: {e}")
                 continue
             values = {k: v for k, v in sound.analysisDict.items()
                       if k not in ("identifiers", "transposability", "path")}
-            names = list(values)
-            assignments = ", ".join(f"{n} = %s" for n in names)
-            params = [Json(values[n]) if isinstance(values[n], (list, dict)) else
-                      (float(values[n]) if isinstance(values[n], np.generic) else values[n])
-                      for n in names]
-            self.cur.execute(
-                f"UPDATE {tableName} SET {assignments} WHERE id = %s", params + [id])
-            self.conn.commit()
+            self.writeAnalysis(id, values, tableName)
 
+    TIMBRE_SLOT_COLUMNS = [
+        ("mfccAttack", "REAL[]"),
+        ("mfccAttackFrames", "INT"),
+        ("mfccSustain", "REAL[]"),
+        ("mfccSustainFrames", "INT"),
+        ("attackStartSec", "FLOAT"),
+        ("attackEndSec", "FLOAT"),
+        ("logAttackTime", "FLOAT"),
+        ("mfccSettings", "JSON"),
+    ]
+
+    def loadTimbreSlots(self, tableName="soundfile_analysis", **conditions):
+        """
+        Training data: returns a dict of numpy arrays for all sounds
+        matching the search conditions (same syntax as search):
+            attack        (N, numCoeffs, numFrames)  float32
+            attackFrames  (N,) valid frames (rest is padding)
+            sustain       (N, numCoeffs, numFrames)  float32
+            sustainFrames (N,)
+            logAttackTime (N,)
+            ids, paths, identifiers : lists
+        All entries must have been analysed with the same slot settings.
+        """
+        conditions["columns"] = ["id", "path", "identifiers", "mfccAttack",
+                                 "mfccAttackFrames", "mfccSustain",
+                                 "mfccSustainFrames", "logAttackTime"]
+        conditions["mfccAttack__isnull"] = False
+        rows = self.search(tableName, **conditions)
+        if not rows:
+            return None
+        shapes = {np.shape(r["mfccattack"]) for r in rows} | {np.shape(r["mfccsustain"]) for r in rows}
+        if len({np.shape(r["mfccattack"]) for r in rows}) > 1 or \
+           len({np.shape(r["mfccsustain"]) for r in rows}) > 1:
+            raise ValueError(f"Tudo.loadTimbreSlots: mixed slot shapes {shapes}, "
+                             "reanalyse with one setting or filter the entries")
+        return dict(
+            attack=np.array([r["mfccattack"] for r in rows], dtype=np.float32),
+            attackFrames=np.array([r["mfccattackframes"] for r in rows]),
+            sustain=np.array([r["mfccsustain"] for r in rows], dtype=np.float32),
+            sustainFrames=np.array([r["mfccsustainframes"] for r in rows]),
+            logAttackTime=np.array([r["logattacktime"] for r in rows], dtype=np.float32),
+            ids=[r["id"] for r in rows],
+            paths=[r["path"] for r in rows],
+            identifiers=[r["identifiers"] for r in rows],
+        )

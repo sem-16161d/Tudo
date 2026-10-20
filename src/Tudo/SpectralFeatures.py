@@ -18,7 +18,7 @@ All features are computed frame by frame on the STFT magnitude spectrum
     decrease    6.1.6  perceptually motivated slope
     rolloff     6.1.7  frequency below which 95 % of the energy lies   [Hz]
     variation   6.2.1  1 - normalised cross-correlation of successive frames
-    mfcc        6.3.1  12 Mel-frequency cepstral coefficients (c0 dropped)
+    mfcc        6.3.1  MFCCs -> computed in MFCC.py with FluCoMa-style settings
     sfmBands    9.1    spectral flatness in 250-500, 500-1k, 1k-2k, 2k-4k Hz
     scmBands    9.1    spectral crest in the same four bands
     tonality    9.1    min(SFM_dB / -60, 1) over the whole spectrum (1 = tonal)
@@ -35,7 +35,6 @@ Only numpy + scipy.
 """
 
 import numpy as np
-from scipy.fft import dct
 
 SFM_BANDS = ((250, 500), (500, 1000), (1000, 2000), (2000, 4000))
 
@@ -91,20 +90,6 @@ def _autocorrPeak(signal, frameRate, minHz=2.0, maxHz=20.0):
     return float(frameRate / (best + d)), strength
 
 
-def _melFilterbank(freqs, sr, nMels=40, fmin=0.0, fmax=None):
-    fmax = fmax or sr / 2
-    mel = lambda f: 2595.0 * np.log10(1.0 + f / 700.0)
-    imel = lambda m: 700.0 * (10 ** (m / 2595.0) - 1.0)
-    pts = imel(np.linspace(mel(fmin), mel(fmax), nMels + 2))
-    fb = np.zeros((nMels, len(freqs)))
-    for i in range(nMels):
-        lo, c, hi = pts[i], pts[i + 1], pts[i + 2]
-        up = (freqs - lo) / (c - lo + _EPS)
-        down = (hi - freqs) / (hi - c + _EPS)
-        fb[i] = np.maximum(0, np.minimum(up, down))
-    return fb
-
-
 def barkLoudness(S, freqs, sr):
     """Total loudness per frame (CUIDADO AudioLoudness): sum_z E(z)^0.23."""
     power = S ** 2
@@ -122,7 +107,7 @@ def barkLoudness(S, freqs, sr):
 # ----------------------------------------------------------------------
 # frame-wise features
 # ----------------------------------------------------------------------
-def spectralFeatureTracks(S, freqs, sr, nMfcc=12, rolloffThreshold=0.95):
+def spectralFeatureTracks(S, freqs, sr, rolloffThreshold=0.95):
     """
     S     : magnitude spectrogram (bins x frames), e.g. librosa's |STFT|
     freqs : bin frequencies in Hz
@@ -163,10 +148,7 @@ def spectralFeatureTracks(S, freqs, sr, nMfcc=12, rolloffThreshold=0.95):
     den = np.sqrt((a[:, :-1] ** 2).sum(axis=0)) * np.sqrt((a[:, 1:] ** 2).sum(axis=0))
     variation = np.concatenate([[0.0], 1.0 - num / (den + _EPS)])
 
-    # 6.3.1 MFCC: |FFT| -> Mel bands -> log -> DCT, keep c1..c12
-    fb = _melFilterbank(freqs, sr)
-    melE = fb @ (S ** 2)
-    mfcc = dct(np.log(melE + 1e-10), type=2, axis=0, norm="ortho")[1:nMfcc + 1]
+    # 6.3.1 MFCC: computed separately in MFCC.py (FluCoMa-style settings)
 
     # 9.1 flatness / crest per band on the energy spectrum
     power = a ** 2
@@ -189,7 +171,7 @@ def spectralFeatureTracks(S, freqs, sr, nMfcc=12, rolloffThreshold=0.95):
         "centroid": centroid, "spread": sigma, "skewness": skew,
         "kurtosis": kurt, "slope": slope, "decrease": decrease,
         "rolloff": rolloff, "variation": variation, "tonality": tonality,
-        "mfcc": mfcc, "sfmBands": np.array(sfm), "scmBands": np.array(scm),
+        "sfmBands": np.array(sfm), "scmBands": np.array(scm),
     }
 
 
@@ -234,7 +216,7 @@ def summariseTrack(track, weights, frameRate, *, log=False, minHz=2.0, maxHz=20.
 
 
 def spectralFeatures(S, freqs, sr, hopLength, *, noiseThreshold=0.1,
-                     minHz=2.0, maxHz=20.0, nMfcc=12):
+                     minHz=2.0, maxHz=20.0):
     """
     Compute all tracks and summarise them.
     Only the frames between the first and last frame above
@@ -246,7 +228,7 @@ def spectralFeatures(S, freqs, sr, hopLength, *, noiseThreshold=0.1,
     vector features.
     """
     frameRate = sr / hopLength
-    tracks = spectralFeatureTracks(S, freqs, sr, nMfcc=nMfcc)
+    tracks = spectralFeatureTracks(S, freqs, sr)
     loud = barkLoudness(np.asarray(S, dtype=float), np.asarray(freqs, dtype=float), sr)
     active = np.flatnonzero(loud >= noiseThreshold * (loud.max() + _EPS))
     if len(active) == 0:
@@ -263,6 +245,8 @@ def spectralFeatures(S, freqs, sr, hopLength, *, noiseThreshold=0.1,
             summary[name] = summariseTrack(tr, w, frameRate, log=name in FREQUENCY_FEATURES,
                                            minHz=minHz, maxHz=maxHz)
     for name in VECTOR_FEATURES:
+        if name not in tracks:          # mfcc is summarised in MFCC.py
+            continue
         rows = [summariseTrack(row[seg], w, frameRate, minHz=minHz, maxHz=maxHz)
                 for row in tracks[name]]
         summary[name] = {k: [r[k] for r in rows] for k in rows[0]}

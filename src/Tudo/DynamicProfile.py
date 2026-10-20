@@ -44,11 +44,17 @@ _BARK_EDGES = np.array([
 # ----------------------------------------------------------------------
 # 1. loudness
 # ----------------------------------------------------------------------
-def instantaneousLoudness(signal, sr, hopSec=0.01, winSec=0.04):
+def instantaneousLoudness(signal, sr, hopSec=0.01, winSec=0.04, edgePadding=True):
     """
     AudioLoudness as in the CUIDADO feature set (Peeters 2004):
     energy per Bark band E(z), specific loudness N'(z) = E(z)^0.23,
     total loudness N = sum_z N'(z). One value every `hopSec`.
+
+    edgePadding=True : frames centred on the file edges (reflected
+        padding), frame i is centred at i * hop / sr.
+    edgePadding=False: no padding, frame i is centred at
+        (i * hop + win / 2) / sr. Use this when exact peak timing matters:
+        the reflection at an abrupt file end can create a fake peak.
 
     Returns (loudness, frameRate).
     """
@@ -57,8 +63,12 @@ def instantaneousLoudness(signal, sr, hopSec=0.01, winSec=0.04):
         signal = signal.mean(axis=0 if signal.shape[0] < signal.shape[1] else 1)
     hop = max(1, int(round(hopSec * sr)))
     nfft = int(2 ** np.ceil(np.log2(max(winSec * sr, 64))))
+    if len(signal) < nfft:
+        signal = np.pad(signal, (0, nfft - len(signal)))
     freqs, _, Z = stft(signal, fs=sr, window="hann", nperseg=nfft,
-                       noverlap=nfft - hop, boundary="even", padded=True)
+                       noverlap=nfft - hop,
+                       boundary="even" if edgePadding else None,
+                       padded=edgePadding)
     power = np.abs(Z) ** 2
 
     edges = _BARK_EDGES[_BARK_EDGES < sr / 2]
