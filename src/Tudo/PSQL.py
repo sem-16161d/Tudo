@@ -72,7 +72,7 @@ class PSQL():
         return self.cur.fetchall()
 
     def addTable(self, tableName = "tableNo1"):
-        cmd = (f"CREATE TABLE {tableName} (id serial PRIMARY KEY)")
+        cmd = (f"CREATE TABLE IF NOT EXISTS {tableName} (id serial PRIMARY KEY)")
         # self.tableNames.append(tableName)
         self.executeQuery(cmd)
 
@@ -88,10 +88,11 @@ class PSQL():
         return self.cur.fetchall()
 
     def addColumn(self, tableName = "tableNo1", columnName = "columnNo1", valueType = "FLOAT"):
-        cmd = (f"ALTER TABLE {tableName} ADD COLUMN {columnName} {valueType}")
+        cmd = (f"ALTER TABLE {tableName} ADD COLUMN IF NOT EXISTS {columnName} {valueType}")
         if tableName not in self.columnNames:
             self.columnNames[tableName] = []
-        self.columnNames[tableName].append(columnName)
+        if columnName not in self.columnNames[tableName]:
+            self.columnNames[tableName].append(columnName)
         self.executeQuery(cmd)
 
     def dumpAllColumns(self, tableName="tableNo1"):

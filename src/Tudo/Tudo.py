@@ -103,7 +103,6 @@ class Tudo(PSQL):
             ("transpositionSemitones", "FLOAT"),
             ("chords", "BOOL"),
             ("multiphonics", "BOOL"),
-            ("numSystems", "INT"),
             ("materials", "JSON"),
             ("playingTechniques", "JSON"),
             ("possibleClefs", "JSON"),
