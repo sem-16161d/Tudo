@@ -9,6 +9,8 @@ import scipy.io.wavfile as wavfile
 import numpy as np
 from scipy.signal import find_peaks
 from itertools import combinations
+from Tudo.DynamicProfile import dynamicProfile
+from Tudo.SpectralFeatures import spectralFeatures, analysisDictEntries, _autocorrPeak
 
 def _get_sample_rate(path):
     """
@@ -26,6 +28,10 @@ def _autocorr_peak(signal, sr, min_hz=2.0, max_hz=20.0):
     """
     Find the dominant periodic rate in a frame-rate signal via autocorrelation.
 
+    Delegates to SpectralFeatures._autocorrPeak, which caps the search at
+    the track's Nyquist (sr / 2) and only accepts true local maxima of the
+    autocorrelation (non-periodic tracks return 0, 0).
+
     Parameters
     ----------
     signal   : 1D numpy array (one value per hop frame)
@@ -38,34 +44,7 @@ def _autocorr_peak(signal, sr, min_hz=2.0, max_hz=20.0):
     rate_hz  : dominant oscillation frequency (Hz), or 0 if none found
     strength : normalised autocorrelation peak value [0, 1]
     """
-    signal = signal - np.mean(signal)
-    if np.std(signal) < 1e-10:
-        return 0.0, 0.0
-
-    # Lag range in samples at the given frame rate
-    lag_min = max(1, int(sr / max_hz))
-    lag_max = int(sr / min_hz)
-
-    if lag_max >= len(signal):
-        lag_max = len(signal) - 1
-    if lag_min >= lag_max:
-        return 0.0, 0.0
-
-    # Normalised autocorrelation
-    acf = np.correlate(signal, signal, mode='full')
-    acf = acf[len(acf) // 2:]          # keep positive lags
-    acf /= (acf[0] + 1e-12)            # normalise to [−1, 1]
-
-    window = acf[lag_min:lag_max + 1]
-    if len(window) == 0:
-        return 0.0, 0.0
-
-    peak_idx = np.argmax(window)
-    strength = float(np.clip(window[peak_idx], 0.0, 1.0))
-    lag_samples = peak_idx + lag_min
-    rate_hz = float(sr / lag_samples) if lag_samples > 0 else 0.0
-
-    return rate_hz, strength
+    return _autocorrPeak(signal, sr, min_hz, max_hz)
 
 
 class Sound:
@@ -113,6 +92,14 @@ class Sound:
         self.pitchFluctuation     = None
         self.amplitudeFluctuation = None
         self.spectralFluctuation  = None
+
+        # dynamic profile (populated by getDynamicProfile)
+        self.dynamicProfile = None
+        self.dynamicProfileFeatures = None
+
+        # Peeters spectral features (populated by getSpectralFeatures)
+        self.spectralFeatures = None
+        self.spectralFeatureTracks = None
 
         self.analysisDict = {"identifiers":[], "transposability": transposability}
 
@@ -259,6 +246,42 @@ class Sound:
         self.flatnessEnv = Envelope([float(val) for val in self.flatnesses])
         self.flatnessMedian = self.flatnessEnv.median_y()
         self.flatnessMean = self.flatnessEnv.mean_y()
+
+    # --------------------------
+    # Dynamic profile (Peeters & Deruty 2008, sec. 3.1)
+    # --------------------------
+
+    def getDynamicProfile(self, **kwargs):
+        """
+        Classify the loudness shape as ascending, descending,
+        ascending/descending, stable or impulsive.
+        kwargs go to DynamicProfile.dynamicProfileFeatures
+        (lowpassHz, noiseThreshold, effDurThreshold, timeBase, maxTolerance).
+        """
+        self.dynamicProfile, self.dynamicProfileFeatures = dynamicProfile(
+            self.soundfile, self.samplerate, **kwargs)
+        return self.dynamicProfile
+
+    # --------------------------
+    # Spectral features (Peeters 2004, sec. 6 + 9.1)
+    # --------------------------
+
+    def getSpectralFeatures(self, minHz=2.0, maxHz=20.0):
+        """
+        centroid, spread, skewness, kurtosis, slope, decrease, rolloff,
+        variation, tonality, 12 MFCCs, band flatness and crest.
+        Each summarised as main (most common) value + fluctuation
+        rate / depth / strength. See Tudo/SpectralFeatures.py.
+
+        self.spectralFeatures      : summary dict
+        self.spectralFeatureTracks : frame-wise curves (for plotting)
+        """
+        if self.S is None:
+            self.stft()
+        self.spectralFeatures, self.spectralFeatureTracks = spectralFeatures(
+            self.S, self.fftFrequencies, self.samplerate, self.hopLength,
+            minHz=minHz, maxHz=maxHz)
+        return self.spectralFeatures
 
     # --------------------------
     # Fluctuation detectors
@@ -434,6 +457,9 @@ class Sound:
         self.getFlatness()
         self.calculateDynamicEnv(3,3,resolution=10)
         self.getFluctuations()
+        self.getDynamicProfile()
+        self.getSpectralFeatures()
+        dp = self.dynamicProfileFeatures
         self.analysisDict = {
             "identifiers": self.analysisDict["identifiers"],
             "transposability": self.analysisDict["transposability"],
@@ -458,7 +484,16 @@ class Sound:
             "spectFluctVariance":  self.spectralFluctuation["variance"],
             "spectFluctRate":      self.spectralFluctuation["rate_hz"],
             "spectFluctStrength":  self.spectralFluctuation["strength"],
+            # dynamic profile
+            "dynProfile":  self.dynamicProfile,
+            "dynSlope1":   dp["slope1"],
+            "dynRelDur1":  dp["relDur1"],
+            "dynSlope2":   dp["slope2"],
+            "dynRelDur2":  dp["relDur2"],
+            "dynEffDur":   dp["effDur"],
         }
+        # spectral features: spec<Feature>Main / FluctRate / FluctDepth / FluctStrength
+        self.analysisDict.update(analysisDictEntries(self.spectralFeatures))
         print("Sound.analyse: done!")
 
     def addIdentifier (self, identifier):
