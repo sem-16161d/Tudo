@@ -7,6 +7,7 @@ import numpy as np
 from Tudo.PSQL import PSQL
 from Tudo.Sound import Sound
 from Tudo.Search import buildSearchQuery
+from Tudo.Similarity import knn, resolveFeatures, FEATURE_SETS
 from Tudo.SpectralFeatures import databaseColumns as spectralColumns, analysisDictEntries
 from psycopg2.extras import Json
 
@@ -425,6 +426,96 @@ class Tudo(PSQL):
         rows = [dict(zip(names, r)) for r in self.cur.fetchall()]
         self.conn.commit()
         return rows
+
+    # ------------------------------------------------------------------
+    # similarity search (KNN)
+    # ------------------------------------------------------------------
+    def _targetRow(self, target, features, tableName):
+        """Feature dict (lowercase keys) + database id (or None) of a target."""
+        if isinstance(target, Sound):
+            if not target.analysisDict.get("path") and target.path:
+                target.analyse()
+            return {k.lower(): v for k, v in target.analysisDict.items()}, None
+        if isinstance(target, dict):
+            return {k.lower(): v for k, v in target.items()}, target.get("id")
+        if isinstance(target, (int, np.integer)):
+            rows = self.search(tableName, id=int(target), columns=["id"] + features)
+            if not rows:
+                raise ValueError(f"Tudo.findSimilar: no entry with id {target}")
+            return rows[0], int(target)
+        if isinstance(target, str):
+            rows = self.search(tableName, path=target, columns=["id"] + features)
+            if rows:
+                return rows[0], rows[0]["id"]
+            if not os.path.isfile(target):
+                raise ValueError(f"Tudo.findSimilar: '{target}' is neither in the database nor a file")
+            print(f"Tudo: analysing target {os.path.basename(target)} (not in the database)")
+            sound = self._sound(target)
+            sound.analyse()
+            return {k.lower(): v for k, v in sound.analysisDict.items()}, None
+        raise TypeError("Tudo.findSimilar: target must be an id, a path, a Sound or a dict")
+
+    def findSimilar(self, target, k=10, features="timbre", *, weights=None,
+                    normalise="zscore", balanceVectors=True, metric="euclidean",
+                    pca=None, includeTarget=False, returnColumns=("path", "identifiers"),
+                    tableName="soundfile_analysis", **conditions):
+        """
+        K nearest neighbours of a target sound.
+
+        1. conditional search in SQL (same conditions as t.search), so only
+           the remaining entries are loaded and compared
+        2. KNN over those entries (see Similarity.py)
+
+        target   : database id, file path (analysed on the fly if it is not
+                   in the database), Sound object, or dict {feature: value}
+        k        : number of neighbours
+        features : preset name ("timbre", "pitch", "dynamics", "fluctuation",
+                   "mfcc", "all"), column name, or a list of both.
+                   List columns (e.g. specMfccMain) are used element-wise.
+                   With a dict target, features it doesn't contain are dropped.
+        weights  : {feature: weight}, default 1 each
+        normalise: "zscore" (default), "robust" (median/IQR) or None
+        balanceVectors : a list feature counts like one scalar (default True)
+        metric   : "euclidean", "manhattan" or "cosine"
+        pca      : number of PCA components, None = no reduction
+
+        Returns a list of dicts (nearest first) with id, distance and
+        returnColumns. Details of the last run: t.lastSimilarityInfo
+        """
+        feats = resolveFeatures(features)
+        targetRow, targetId = self._targetRow(target, feats, tableName)
+        if isinstance(target, dict):
+            feats = [f for f in feats if targetRow.get(f) is not None]
+            if not feats:
+                raise ValueError("Tudo.findSimilar: the target dict has none of the features")
+        for key in ("limit", "offset", "orderBy", "random", "columns"):
+            conditions.pop(key, None)
+        # NULL features are filtered out in SQL already
+        for f in feats:
+            conditions.setdefault(f + "__isnull", False)
+        if targetId is not None and not includeTarget:
+            conditions["id__ne"] = targetId
+        cols = ["id"] + [c for c in returnColumns if c.lower() not in feats and c.lower() != "id"] + feats
+        rows = self.search(tableName, columns=cols, **conditions)
+
+        if not rows:
+            self.lastSimilarityInfo = dict(features=feats, candidates=0, used=0)
+            print("Tudo: no entries match the conditions")
+            return []
+        hits, info = knn(targetRow, rows, feats, k, weights=weights,
+                         normalise=normalise, balanceVectors=balanceVectors,
+                         metric=metric, pca=pca)
+        self.lastSimilarityInfo = info
+        print(f"Tudo: {info['candidates']} entries after conditions, "
+              f"{info['used']} with all features, {len(hits)} nearest returned")
+        out = []
+        for i, dist in hits:
+            r = rows[i]
+            item = {"id": r["id"], "distance": dist}
+            for c in returnColumns:
+                item[c] = r.get(c.lower())
+            out.append(item)
+        return out
 
     def searchPaths(self, tableName="soundfile_analysis", **conditions):
         """Like search, but returns only the file paths."""
