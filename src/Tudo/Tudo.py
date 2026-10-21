@@ -1,5 +1,6 @@
 #Tudo.py
 import os
+import re
 import subprocess
 import numpy as np
 from Tudo.PSQL import PSQL
@@ -173,12 +174,21 @@ class Tudo(PSQL):
         self.cur.execute(f"UPDATE {tableName} SET {assignments} WHERE id = %s", params + [id])
         self.conn.commit()
 
-    def newEntryFromSound(self, pathToSfile: str, identifiers = [], transposability = 1):
+    def newEntryFromSound(self, pathToSfile: str, identifiers = [], transposability = 1,
+                          *, folderTags=True, filenameTags=True, rootFolder=None):
+        """
+        Analyse one sound file and add it to the database.
+        identifiers are extended by the automatic tags (see autoIdentifiers):
+        folder names between rootFolder and the file + words of the file name.
+        """
+        tags = self._mergeTags(list(identifiers), self.autoIdentifiers(
+            pathToSfile, rootFolder, folderTags=folderTags, filenameTags=filenameTags))
         sound = self._sound(pathToSfile, transposability)
         sound.analyse()
-        sound.addIntentifiers(identifiers)
+        sound.addIntentifiers(tags)
         self.newEntry("soundfile_analysis")
         self.writeAnalysis(self.lastID["soundfile_analysis"], sound.analysisDict)
+        return tags
 
     SAMPLES_ROOT = "/Users/sraw/Documents/SAMPLES/TUDO/SAMPLES"
     SKIP_FOLDER_NAMES = {"none"}          # placeholder folders in the taxonomy
@@ -205,6 +215,37 @@ class Tudo(PSQL):
         tags = [self._normaliseTag(p) if normalise else p for p in parts]
         return [t for t in tags if t and t.lower() not in self.SKIP_FOLDER_NAMES]
 
+    # words that carry no meaning as tags (extend as needed)
+    FILENAME_STOPWORDS = {"a", "an", "the", "and", "or", "of", "in", "on", "at",
+                          "to", "for", "with", "by", "from", "wav", "aif", "aiff"}
+
+    def filenameIdentifiers(self, filePath, keepNumbers=False, minLength=2):
+        """
+        Individual words of the file name (without extension), lowercase.
+        Split at everything that is not a letter or digit.
+            Mouth_Fx_01.wav                -> ['mouth', 'fx']
+            Cb-behind_bridge-N-N-2c-N.wav  -> ['cb', 'behind', 'bridge', '2c']
+            07042047.wav                   -> []
+        keepNumbers=False drops pure numbers (usually take indices),
+        words shorter than minLength and FILENAME_STOPWORDS are dropped.
+        """
+        stem = os.path.splitext(os.path.basename(filePath))[0]
+        words = [w.lower() for w in re.split(r"[^0-9A-Za-zÀ-ÖØ-öø-ÿ]+", stem) if w]
+        return self._mergeTags([
+            w for w in words
+            if len(w) >= minLength
+            and (keepNumbers or not w.isdigit())
+            and w not in self.FILENAME_STOPWORDS])
+
+    def autoIdentifiers(self, filePath, rootFolder=None, *, folderTags=True, filenameTags=True):
+        """Automatic tags of a file: folder names, then file-name words."""
+        tags = []
+        if folderTags:
+            tags = self._mergeTags(tags, self.folderIdentifiers(filePath, rootFolder))
+        if filenameTags:
+            tags = self._mergeTags(tags, self.filenameIdentifiers(filePath))
+        return tags
+
     @staticmethod
     def _mergeTags(*lists):
         out = []
@@ -215,7 +256,7 @@ class Tudo(PSQL):
         return out
 
     def newEntriesFromFolder(self, pathToFolder: str, identifiers = [], transposability = 1,
-                             *, folderTags=True, rootFolder=None, recursive=True,
+                             *, folderTags=True, filenameTags=True, rootFolder=None, recursive=True,
                              skipExisting=True, extensions=(".wav",)):
         """
         Analyse all sound files in a folder and add them to the database.
@@ -224,6 +265,8 @@ class Tudo(PSQL):
         folderTags    : also add the names of all folders between rootFolder
                         and the file as individual tags (lowercase, '_' -> ' ',
                         'NONE' folders skipped)
+        filenameTags  : also add the individual words of the file name
+                        (see filenameIdentifiers)
         rootFolder    : where folder tags start (default Tudo.SAMPLES_ROOT)
         recursive     : include all subfolders (default; each file gets its
                         own folder tags). False = only this folder.
@@ -242,28 +285,46 @@ class Tudo(PSQL):
             if filePath in existing:
                 print(f"Tudo: {i+1}/{len(files)} already in database: {name}")
                 continue
-            tags = list(identifiers)
-            if folderTags:
-                tags = self._mergeTags(tags, self.folderIdentifiers(filePath, rootFolder))
-            print(f"Tudo: analysing {i+1}/{len(files)}  {name}  {tags}")
+            print(f"Tudo: analysing {i+1}/{len(files)}  {name}")
             try:
-                self.newEntryFromSound(filePath, tags, transposability)
+                tags = self.newEntryFromSound(
+                    filePath, identifiers, transposability, folderTags=folderTags,
+                    filenameTags=filenameTags, rootFolder=rootFolder)
+                print(f"      tags: {tags}")
             except Exception as e:
                 print(f"Tudo: skipped {name}: {e}")
 
-    def updateFolderIdentifiers(self, rootFolder=None, tableName="soundfile_analysis", **conditions):
+    def updateAutoIdentifiers(self, rootFolder=None, *, folderTags=True, filenameTags=True,
+                              dryRun=False, tableName="soundfile_analysis", **conditions):
         """
-        Add folder tags to entries that are already in the database
-        (keeps their existing identifiers). Takes search conditions,
-        e.g. pathContains="Prayer_Bowls".
+        Go through the library and make sure every entry has its automatic
+        tags (folder names + file-name words). Missing tags are appended,
+        existing identifiers are kept. Takes search conditions to limit it,
+        e.g. pathContains="CARTOONISH". dryRun=True only reports.
+        Returns the number of entries that were (or would be) updated.
         """
         conditions["columns"] = ["id", "path", "identifiers"]
-        rows = self.search(tableName, **conditions)
+        rows = self.search(tableName, orderBy="id", **conditions)
+        changed = 0
         for r in rows:
-            tags = self._mergeTags(r["identifiers"] or [], self.folderIdentifiers(r["path"], rootFolder))
-            if tags != (r["identifiers"] or []):
-                self.writeAnalysis(r["id"], {"identifiers": tags}, tableName)
-        print(f"Tudo: checked folder tags of {len(rows)} entries")
+            current = r["identifiers"] or []
+            missing = [tag for tag in self.autoIdentifiers(
+                r["path"], rootFolder, folderTags=folderTags, filenameTags=filenameTags)
+                if tag not in current]
+            if not missing:
+                continue
+            changed += 1
+            print(f"Tudo: [{r['id']}] {os.path.basename(r['path'])}  + {missing}")
+            if not dryRun:
+                self.writeAnalysis(r["id"], {"identifiers": current + missing}, tableName)
+        verb = "would update" if dryRun else "updated"
+        print(f"Tudo: checked {len(rows)} entries, {verb} {changed}")
+        return changed
+
+    def updateFolderIdentifiers(self, rootFolder=None, tableName="soundfile_analysis", **conditions):
+        """Folder tags only (see updateAutoIdentifiers)."""
+        return self.updateAutoIdentifiers(rootFolder, filenameTags=False,
+                                          tableName=tableName, **conditions)
 
     # ------------------------------------------------------------------
     # conditional search
