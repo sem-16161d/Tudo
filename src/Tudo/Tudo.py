@@ -1,6 +1,7 @@
 #Tudo.py
 import os
 import re
+import unicodedata
 import subprocess
 import numpy as np
 from Tudo.PSQL import PSQL
@@ -195,8 +196,24 @@ class Tudo(PSQL):
 
     @staticmethod
     def _normaliseTag(name):
-        """MUSIC_RADAR -> 'music radar', Prayer_Bowls -> 'prayer bowls'."""
-        return " ".join(name.replace("_", " ").split()).lower()
+        """MUSIC_RADAR -> 'music radar', Prayer_Bowls -> 'prayer bowls',
+        Förderband -> 'foerderband'."""
+        return " ".join(Tudo._transliterate(name).replace("_", " ").split()).lower()
+
+    _GERMAN = {"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue",
+               "ß": "ss", "ẞ": "SS"}
+
+    @staticmethod
+    def _transliterate(text):
+        """
+        ASCII-only tags: ä -> ae, ö -> oe, ü -> ue, ß -> ss, other accents
+        are removed (é -> e, ç -> c). macOS stores file names decomposed
+        ('o' + combining diaeresis), so the text is NFC-normalised first.
+        """
+        text = unicodedata.normalize("NFC", str(text))
+        text = "".join(Tudo._GERMAN.get(ch, ch) for ch in text)
+        text = unicodedata.normalize("NFKD", text)
+        return "".join(ch for ch in text if not unicodedata.combining(ch))
 
     def folderIdentifiers(self, filePath, rootFolder=None, normalise=True):
         """
@@ -226,11 +243,12 @@ class Tudo(PSQL):
             Mouth_Fx_01.wav                -> ['mouth', 'fx']
             Cb-behind_bridge-N-N-2c-N.wav  -> ['cb', 'behind', 'bridge', '2c']
             07042047.wav                   -> []
+            Untertage_FörderpanzerX.aif    -> ['untertage', 'foerderpanzerx']
         keepNumbers=False drops pure numbers (usually take indices),
         words shorter than minLength and FILENAME_STOPWORDS are dropped.
         """
-        stem = os.path.splitext(os.path.basename(filePath))[0]
-        words = [w.lower() for w in re.split(r"[^0-9A-Za-zÀ-ÖØ-öø-ÿ]+", stem) if w]
+        stem = self._transliterate(os.path.splitext(os.path.basename(filePath))[0])
+        words = [w.lower() for w in re.split(r"[^0-9A-Za-z]+", stem) if w]
         return self._mergeTags([
             w for w in words
             if len(w) >= minLength
@@ -318,6 +336,50 @@ class Tudo(PSQL):
             if not dryRun:
                 self.writeAnalysis(r["id"], {"identifiers": current + missing}, tableName)
         verb = "would update" if dryRun else "updated"
+        print(f"Tudo: checked {len(rows)} entries, {verb} {changed}")
+        return changed
+
+    def _legacyAutoIdentifiers(self, filePath, rootFolder=None):
+        """Automatic tags exactly as generated before the umlaut fix (for cleanup)."""
+        root = os.path.abspath(rootFolder or self.SAMPLES_ROOT)
+        folder = os.path.dirname(os.path.abspath(filePath))
+        if os.path.commonpath([root, folder]) == root:
+            parts = os.path.relpath(folder, root).split(os.sep)
+            parts = [] if parts == ["."] else parts
+        else:
+            parts = [os.path.basename(folder)]
+        tags = {" ".join(p.replace("_", " ").split()).lower() for p in parts}
+        tags = {t for t in tags if t and t not in self.SKIP_FOLDER_NAMES}
+        stem = os.path.splitext(os.path.basename(filePath))[0]
+        words = [w.lower() for w in re.split(r"[^0-9A-Za-zÀ-ÖØ-öø-ÿ]+", stem) if w]
+        tags |= {w for w in words if len(w) >= 2 and not w.isdigit()
+                 and w not in self.FILENAME_STOPWORDS}
+        return tags
+
+    def fixUmlautTags(self, rootFolder=None, dryRun=False, tableName="soundfile_analysis", **conditions):
+        """
+        One-off cleanup for entries tagged before the umlaut fix:
+        removes broken automatic tags (e.g. 'rderpanzerx', or tags with
+        decomposed umlauts) and adds the correct ones ('foerderpanzerx').
+        Only tags the old method could have produced are removed, and only
+        if the new method doesn't produce them. dryRun=True only reports.
+        """
+        conditions["columns"] = ["id", "path", "identifiers"]
+        rows = self.search(tableName, orderBy="id", **conditions)
+        changed = 0
+        for r in rows:
+            current = r["identifiers"] or []
+            new = self.autoIdentifiers(r["path"], rootFolder)
+            legacy = self._legacyAutoIdentifiers(r["path"], rootFolder)
+            broken = [t for t in current if t in legacy and t not in new]
+            fixed = self._mergeTags([t for t in current if t not in broken], new)
+            if fixed == current:
+                continue
+            changed += 1
+            print(f"Tudo: [{r['id']}] {os.path.basename(r['path'])}  - {broken}  + {[t for t in fixed if t not in current]}")
+            if not dryRun:
+                self.writeAnalysis(r["id"], {"identifiers": fixed}, tableName)
+        verb = "would fix" if dryRun else "fixed"
         print(f"Tudo: checked {len(rows)} entries, {verb} {changed}")
         return changed
 
