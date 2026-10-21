@@ -215,7 +215,7 @@ class Tudo(PSQL):
         return out
 
     def newEntriesFromFolder(self, pathToFolder: str, identifiers = [], transposability = 1,
-                             *, folderTags=True, rootFolder=None, recursive=False,
+                             *, folderTags=True, rootFolder=None, recursive=True,
                              skipExisting=True, extensions=(".wav",)):
         """
         Analyse all sound files in a folder and add them to the database.
@@ -225,7 +225,8 @@ class Tudo(PSQL):
                         and the file as individual tags (lowercase, '_' -> ' ',
                         'NONE' folders skipped)
         rootFolder    : where folder tags start (default Tudo.SAMPLES_ROOT)
-        recursive     : include subfolders (each file gets its own folder tags)
+        recursive     : include all subfolders (default; each file gets its
+                        own folder tags). False = only this folder.
         skipExisting  : skip files whose path is already in the database
         """
         if recursive:
