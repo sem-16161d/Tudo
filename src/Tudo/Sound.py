@@ -5,7 +5,7 @@ from random import random
 from librosa import load
 from librosa.feature import spectral_centroid, spectral_flatness
 import librosa
-import scipy.io.wavfile as wavfile
+import soundfile
 import numpy as np
 from scipy.signal import find_peaks
 from itertools import combinations
@@ -16,10 +16,10 @@ from Tudo.MFCC import (summariseMfcc, timbreSlots, slotSettingsRecord,
 
 def _get_sample_rate(path):
     """
-    Get the sample rate of a sound file before loading it with librosa.
+    Sample rate of a sound file, read from the header only (libsndfile:
+    WAV, AIFF, FLAC, OGG, ...).
     """
-    wav = wavfile.read(path)
-    return int(wav[0])
+    return int(soundfile.info(path).samplerate)
 
 
 # --------------------------

@@ -17,5 +17,6 @@ dependencies = [
   "scipy",
   "GreasyPidgin",
   "librosa",
+  "soundfile",
   "psycopg2"
 ] 

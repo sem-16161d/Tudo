@@ -257,7 +257,7 @@ class Tudo(PSQL):
 
     def newEntriesFromFolder(self, pathToFolder: str, identifiers = [], transposability = 1,
                              *, folderTags=True, filenameTags=True, rootFolder=None, recursive=True,
-                             skipExisting=True, extensions=(".wav",)):
+                             skipExisting=True, extensions=(".wav", ".aif", ".aiff", ".flac")):
         """
         Analyse all sound files in a folder and add them to the database.
 
