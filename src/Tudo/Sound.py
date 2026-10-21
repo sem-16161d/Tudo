@@ -56,7 +56,8 @@ class Sound:
         *,
         transposability = 1,# 0 = chromatic, -1 = false, 1 = freely
         windowSize = 2**12, hopLength= 2**11,
-        mfccSettings=None, attackSettings=None, sustainSettings=None):
+        mfccSettings=None, attackSettings=None, sustainSettings=None,
+        sineToleranceCents=33, sineHistogramSize=16):
         """
         Load and analyze a sound file.
         """
@@ -95,6 +96,10 @@ class Sound:
         self.peakdB = '-inf'
         self.D,self.S, self.phase, self.fftFrequencies = None, None, None,None
         self.freq_list, self.mag_list, self.allpairs,self.sineHistogram = None,None,None,None
+        # sine histogram settings: error band (+/- cents) and number of pitches
+        self.sineToleranceCents = float(sineToleranceCents)
+        self.sineHistogramSize = int(sineHistogramSize)
+        self.sinePitches = None       # detailed histogram (list of dicts)
         self.mainPitchHz, self.spectralDensity, self.roughness, self.spectralCentroid=None, None, None, None
         self.flatnessMedian = None
 
@@ -148,8 +153,16 @@ class Sound:
         # Peak detection (local maxima above threshold)
         peaks, props = find_peaks(log_mag, height=detectionThreshold)
 
-        freqs = peaks * (self.samplerate / fftSize)
-        mags = log_mag[peaks]
+        # quadratic interpolation on the dB spectrum (as in FluCoMa's
+        # SineFeature): sub-bin frequency and peak level. Without it the
+        # frequency is quantised to the bin spacing (10.8 Hz at 44.1 kHz /
+        # 4096 = ~42 cents at 440 Hz, more than the histogram error band).
+        a, b, c = log_mag[peaks - 1], log_mag[peaks], log_mag[peaks + 1]
+        denom = a - 2 * b + c
+        offset = np.where(np.abs(denom) > 1e-12, 0.5 * (a - c) / np.where(denom == 0, 1, denom), 0.0)
+        offset = np.clip(offset, -0.5, 0.5)
+        freqs = (peaks + offset) * (self.samplerate / fftSize)
+        mags = b - 0.25 * (a - c) * offset
 
         # Optional sorting
         if sortBy == "magnitude":
@@ -222,17 +235,38 @@ class Sound:
             sr=self.samplerate,
             n_fft=self.windowSize)
 
-    def getSineFeature(self,detectionThresholddB=-144,maxPeaks=16, toleranceCENTS = 30):
+    def getSineFeature(self, detectionThresholddB=-144, maxPeaks=16, toleranceCENTS=None,
+                       histogramSize=None):
+        """
+        Sine histogram: the most prominent pitches of the whole sample.
+
+        Per STFT frame the maxPeaks strongest sinusoidal peaks are detected.
+        All peaks of all frames are grouped into pitch clusters with an
+        error band of +/- toleranceCENTS (default self.sineToleranceCents
+        = 33). Each cluster's weight is the sum of the linear amplitudes of
+        its peaks, i.e. how often the pitch appears x how strong it is.
+        The histogramSize (default 16) heaviest clusters are kept.
+
+        self.sineHistogram : [(hz, relativeWeight), ...] heaviest first
+        self.sinePitches   : [{hz, weight, occurrence, meanDb}, ...]
+            hz         amplitude-weighted mean pitch of the cluster
+            weight     share of the total weight of all clusters (0-1)
+            occurrence share of frames in which the pitch appears (0-1)
+            meanDb     mean peak level in dB
+        """
+        tol = self.sineToleranceCents if toleranceCENTS is None else float(toleranceCENTS)
+        size = self.sineHistogramSize if histogramSize is None else int(histogramSize)
         self.freq_list, self.mag_list = self.sine_features(detectionThreshold=detectionThresholddB,maxPeaks=maxPeaks)
-        self.allpairs =[
-            (f,m) 
-            for fl,ml in zip(self.freq_list, self.mag_list) 
-            for f, m in zip(fl, ml) ]
-        clusters = cluster_by_cents(self.allpairs,tolerance_cents=toleranceCENTS)
-        
-        clusters_sorted = sorted(
-            clusters,key=lambda c: c["dominance"],reverse=True)
-        self.sineHistogram = [(c["center"], c["relative"]) for c in clusters_sorted[:16]]
+        self.allpairs = [
+            (f, m)
+            for fl, ml in zip(self.freq_list, self.mag_list)
+            for f, m in zip(fl, ml)]
+        frames = [i for i, fl in enumerate(self.freq_list) for _ in fl]
+        self.sinePitches = pitch_histogram(
+            self.allpairs, frames, len(self.freq_list), tolerance_cents=tol, size=size)
+        self.sineHistogram = [(p["hz"], p["weight"]) for p in self.sinePitches]
+        if not self.sineHistogram:
+            raise ValueError("Sound.getSineFeature: no sinusoidal peaks found")
         self.mainPitchHz = self.sineHistogram[0][0]
         # white noise has a max value of ideally 0.58, so to normalize this became the factor
         if len(self.sineHistogram) > 1:
@@ -512,6 +546,8 @@ class Sound:
             "centroidMostCommon": self.spectralCentroid,
             "pitchcentroidratio":self.pitchcentroidratio,
             "spectralDensity": self.spectralDensity,
+            "sineHistogram": self.sinePitches,
+            "sineToleranceCents": self.sineToleranceCents,
             "roughness": self.roughness,
             "flatnessMedian": self.flatnessMedian,
             # fluctuations
@@ -580,6 +616,64 @@ class Sound:
             f"   ampFluct          : {af}\n"
             f"   spectralFluct     : {sf}\n"
         )
+
+
+def pitch_histogram(pairs, frames, numFrames, tolerance_cents=33, size=16):
+    """
+    Most prominent pitches from (frequency_hz, magnitude_dB) peaks.
+
+    - peaks are processed from strongest to weakest, so the strongest
+      peaks define the cluster pitches (independent of time order)
+    - a peak joins the NEAREST cluster within +/- tolerance_cents,
+      otherwise it starts a new cluster
+    - weight = sum of linear amplitudes (occurrence x strength)
+    - cluster pitch = amplitude-weighted mean in cents
+
+    frames    : frame index of each peak (for the occurrence)
+    numFrames : total number of analysed frames
+    Returns up to `size` dicts {hz, weight, occurrence, meanDb}, heaviest first.
+    """
+    if len(pairs) == 0:
+        return []
+    f = np.array([p[0] for p in pairs], dtype=float)
+    db = np.array([p[1] for p in pairs], dtype=float)
+    fr = np.asarray(frames)
+    ok = f > 0
+    f, db, fr = f[ok], db[ok], fr[ok]
+    amp = 10 ** (db / 20)
+    cents = 1200 * np.log2(f)
+    order = np.argsort(-amp, kind="stable")
+
+    centers = np.empty(max(64, size))
+    label = np.empty(len(f), dtype=int)
+    n = 0
+    for i in order:
+        if n:
+            d = np.abs(centers[:n] - cents[i])
+            j = int(np.argmin(d))
+            if d[j] <= tolerance_cents:
+                label[i] = j
+                continue
+        if n == len(centers):
+            centers = np.resize(centers, 2 * n)
+        centers[n] = cents[i]
+        label[i] = n
+        n += 1
+
+    weight = np.bincount(label, weights=amp, minlength=n)
+    meanCents = np.bincount(label, weights=amp * cents, minlength=n) / np.maximum(weight, 1e-30)
+    count = np.bincount(label, minlength=n)
+    sumDb = np.bincount(label, weights=db, minlength=n)
+    total = weight.sum()
+    out = []
+    for j in np.argsort(-weight, kind="stable")[:size]:
+        out.append({
+            "hz": float(2 ** (meanCents[j] / 1200)),
+            "weight": float(weight[j] / total),
+            "occurrence": float(len(np.unique(fr[label == j])) / max(numFrames, 1)),
+            "meanDb": float(sumDb[j] / count[j]),
+        })
+    return out
 
 
 def cents_distance(f1, f2):

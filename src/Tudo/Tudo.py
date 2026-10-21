@@ -20,6 +20,8 @@ class Tudo(PSQL):
         # MFCC settings passed to every Sound (FluCoMa parameter names,
         # see MFCC.py). Example: t.mfccSettings["attack"]["numFrames"] = 96
         self.mfccSettings = {"summary": {}, "attack": {}, "sustain": {}}
+        # sine histogram: error band in cents (+/-) and number of pitches
+        self.sineSettings = {"toleranceCents": 33, "size": 16}
     
     def initializeNewDatabase(self):
         newTudo = input("do you really want to create a new Tudo? (y/n)")
@@ -59,6 +61,8 @@ class Tudo(PSQL):
                 ("peakAmplitudedB", "FLOAT"),
                 ("mainPitchHz", "FLOAT"),
                 ("spectralDensity", "FLOAT"),
+                ("sineHistogram", "JSON"),
+                ("sineToleranceCents", "FLOAT"),
                 ("roughness", "FLOAT"),
                 ("centroidMostCommon", "FLOAT"),
                 ("pitchcentroidratio", "FLOAT"),
@@ -139,7 +143,9 @@ class Tudo(PSQL):
         return Sound(path, transposability=transposability,
                      mfccSettings=self.mfccSettings.get("summary"),
                      attackSettings=self.mfccSettings.get("attack"),
-                     sustainSettings=self.mfccSettings.get("sustain"))
+                     sustainSettings=self.mfccSettings.get("sustain"),
+                     sineToleranceCents=self.sineSettings.get("toleranceCents", 33),
+                     sineHistogramSize=self.sineSettings.get("size", 16))
 
     def _columnTypes(self, tableName):
         if not hasattr(self, "_colTypes"):
@@ -532,6 +538,7 @@ class Tudo(PSQL):
         self.addMissingColumns(self.DYNAMIC_PROFILE_COLUMNS, tableName)
         self.addMissingColumns(spectralColumns(), tableName)
         self.addMissingColumns(self.TIMBRE_SLOT_COLUMNS, tableName)
+        self.addMissingColumns([("sineHistogram", "JSON"), ("sineToleranceCents", "FLOAT")], tableName)
         sql = f"SELECT id, path, transposability FROM {tableName}"
         params = None
         if ids is not None:
