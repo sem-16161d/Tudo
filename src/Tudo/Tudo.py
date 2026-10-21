@@ -180,14 +180,89 @@ class Tudo(PSQL):
         self.newEntry("soundfile_analysis")
         self.writeAnalysis(self.lastID["soundfile_analysis"], sound.analysisDict)
 
-    def newEntriesFromFolder(self, pathToFolder: str, identifiers = [],transposability = 1):
-        numSounds = len(os.listdir(pathToFolder))
-        for i,filename in enumerate(os.listdir(pathToFolder)):
-            print(f"Tudo: Analysing File {i}/{numSounds}")
-            filePath = os.path.join(pathToFolder, filename)
-            if os.path.isfile(filePath) and filename.lower().endswith(('.wav')):
-                self.newEntryFromSound(filePath, identifiers,transposability)
+    SAMPLES_ROOT = "/Users/sraw/Documents/SAMPLES/TUDO/SAMPLES"
+    SKIP_FOLDER_NAMES = {"none"}          # placeholder folders in the taxonomy
 
+    @staticmethod
+    def _normaliseTag(name):
+        """MUSIC_RADAR -> 'music radar', Prayer_Bowls -> 'prayer bowls'."""
+        return " ".join(name.replace("_", " ").split()).lower()
+
+    def folderIdentifiers(self, filePath, rootFolder=None, normalise=True):
+        """
+        Names of all folders between rootFolder and the file, top to bottom.
+        .../SAMPLES/MUSIC_RADAR/SPIRITUAL/Prayer_Bowls/x.wav
+            -> ['music radar', 'spiritual', 'prayer bowls']
+        Files outside rootFolder: only their own folder name is used.
+        """
+        root = os.path.abspath(rootFolder or self.SAMPLES_ROOT)
+        folder = os.path.dirname(os.path.abspath(filePath))
+        if os.path.commonpath([root, folder]) == root:
+            parts = os.path.relpath(folder, root).split(os.sep)
+            parts = [] if parts == ["."] else parts
+        else:
+            parts = [os.path.basename(folder)]
+        tags = [self._normaliseTag(p) if normalise else p for p in parts]
+        return [t for t in tags if t and t.lower() not in self.SKIP_FOLDER_NAMES]
+
+    @staticmethod
+    def _mergeTags(*lists):
+        out = []
+        for lst in lists:
+            for tag in lst:
+                if tag not in out:
+                    out.append(tag)
+        return out
+
+    def newEntriesFromFolder(self, pathToFolder: str, identifiers = [], transposability = 1,
+                             *, folderTags=True, rootFolder=None, recursive=False,
+                             skipExisting=True, extensions=(".wav",)):
+        """
+        Analyse all sound files in a folder and add them to the database.
+
+        identifiers   : tags added to every file
+        folderTags    : also add the names of all folders between rootFolder
+                        and the file as individual tags (lowercase, '_' -> ' ',
+                        'NONE' folders skipped)
+        rootFolder    : where folder tags start (default Tudo.SAMPLES_ROOT)
+        recursive     : include subfolders (each file gets its own folder tags)
+        skipExisting  : skip files whose path is already in the database
+        """
+        if recursive:
+            files = sorted(os.path.join(d, f) for d, _, fs in os.walk(pathToFolder) for f in fs)
+        else:
+            files = sorted(os.path.join(pathToFolder, f) for f in os.listdir(pathToFolder))
+        files = [f for f in files if os.path.isfile(f) and f.lower().endswith(tuple(extensions))
+                 and not os.path.basename(f).startswith("._")]
+        existing = set(self.searchPaths()) if skipExisting else set()
+
+        for i, filePath in enumerate(files):
+            name = os.path.relpath(filePath, pathToFolder)
+            if filePath in existing:
+                print(f"Tudo: {i+1}/{len(files)} already in database: {name}")
+                continue
+            tags = list(identifiers)
+            if folderTags:
+                tags = self._mergeTags(tags, self.folderIdentifiers(filePath, rootFolder))
+            print(f"Tudo: analysing {i+1}/{len(files)}  {name}  {tags}")
+            try:
+                self.newEntryFromSound(filePath, tags, transposability)
+            except Exception as e:
+                print(f"Tudo: skipped {name}: {e}")
+
+    def updateFolderIdentifiers(self, rootFolder=None, tableName="soundfile_analysis", **conditions):
+        """
+        Add folder tags to entries that are already in the database
+        (keeps their existing identifiers). Takes search conditions,
+        e.g. pathContains="Prayer_Bowls".
+        """
+        conditions["columns"] = ["id", "path", "identifiers"]
+        rows = self.search(tableName, **conditions)
+        for r in rows:
+            tags = self._mergeTags(r["identifiers"] or [], self.folderIdentifiers(r["path"], rootFolder))
+            if tags != (r["identifiers"] or []):
+                self.writeAnalysis(r["id"], {"identifiers": tags}, tableName)
+        print(f"Tudo: checked folder tags of {len(rows)} entries")
 
     # ------------------------------------------------------------------
     # conditional search
