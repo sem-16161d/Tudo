@@ -22,6 +22,8 @@ class Tudo(PSQL):
         # see MFCC.py). Example: t.mfccSettings["attack"]["numFrames"] = 96
         self.mfccSettings = {"summary": {}, "attack": {}, "sustain": {}}
         # sine histogram: error band in cents (+/-) and number of pitches
+        # onset detection (FluCoMa onsetslice parameters, see Onsets.py)
+        self.onsetSettings = {"metric": 2, "threshold": 0.3}
         self.sineSettings = {"toleranceCents": 33, "size": 16,
                              "windowSize": 2**14, "hopLength": 2**12}
     
@@ -66,6 +68,7 @@ class Tudo(PSQL):
                 ("sineHistogram", "JSON"),
                 ("sineToleranceCents", "FLOAT"),
                 ("analysisVersion", "TEXT"),
+                *self.ONSET_COLUMNS,
                 ("roughness", "FLOAT"),
                 ("centroidMostCommon", "FLOAT"),
                 ("pitchcentroidratio", "FLOAT"),
@@ -150,7 +153,8 @@ class Tudo(PSQL):
                      sineToleranceCents=self.sineSettings.get("toleranceCents", 33),
                      sineHistogramSize=self.sineSettings.get("size", 16),
                      sineWindowSize=self.sineSettings.get("windowSize", 2**14),
-                     sineHopLength=self.sineSettings.get("hopLength", 2**12))
+                     sineHopLength=self.sineSettings.get("hopLength", 2**12),
+                     onsetSettings=self.onsetSettings)
 
     def _columnTypes(self, tableName):
         if not hasattr(self, "_colTypes"):
@@ -635,11 +639,7 @@ class Tudo(PSQL):
         onlyOutdated=True skips entries already analysed with the current
         Sound.ANALYSIS_VERSION, so an interrupted run can simply be restarted.
         """
-        self.addMissingColumns(self.DYNAMIC_PROFILE_COLUMNS, tableName)
-        self.addMissingColumns(spectralColumns(), tableName)
-        self.addMissingColumns(self.TIMBRE_SLOT_COLUMNS, tableName)
-        self.addMissingColumns([("sineHistogram", "JSON"), ("sineToleranceCents", "FLOAT"),
-                                ("analysisVersion", "TEXT")], tableName)
+        self.ensureColumns(tableName)
         sql = f"SELECT id, path, transposability FROM {tableName}"
         where, params = [], []
         if ids is not None:
@@ -664,6 +664,24 @@ class Tudo(PSQL):
             values = {k: v for k, v in sound.analysisDict.items()
                       if k not in ("identifiers", "transposability", "path")}
             self.writeAnalysis(id, values, tableName)
+
+    ONSET_COLUMNS = [
+        ("numOnsets", "INT"),
+        ("onsetTimes", "JSON"),
+        ("onsetRate", "FLOAT"),
+        ("ioiMeanSec", "FLOAT"),
+        ("ioiRegularity", "FLOAT"),
+        ("onsetSettings", "JSON"),
+    ]
+
+    def ensureColumns(self, tableName="soundfile_analysis"):
+        """Add every analysis column the current code writes (existing ones are kept)."""
+        self.addMissingColumns(self.DYNAMIC_PROFILE_COLUMNS, tableName)
+        self.addMissingColumns(spectralColumns(), tableName)
+        self.addMissingColumns(self.TIMBRE_SLOT_COLUMNS, tableName)
+        self.addMissingColumns([("sineHistogram", "JSON"), ("sineToleranceCents", "FLOAT"),
+                                ("analysisVersion", "TEXT")], tableName)
+        self.addMissingColumns(self.ONSET_COLUMNS, tableName)
 
     TIMBRE_SLOT_COLUMNS = [
         ("mfccAttack", "REAL[]"),

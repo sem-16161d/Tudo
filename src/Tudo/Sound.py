@@ -10,6 +10,7 @@ import numpy as np
 from scipy.signal import find_peaks
 from itertools import combinations
 from Tudo.DynamicProfile import dynamicProfile
+from Tudo.Onsets import detectOnsets, onsetMetrics, ONSET_DEFAULTS
 from Tudo.SpectralFeatures import spectralFeatures, analysisDictEntries, _autocorrPeak
 from Tudo.MFCC import (summariseMfcc, timbreSlots, slotSettingsRecord,
                        SUMMARY_DEFAULTS, ATTACK_DEFAULTS, SUSTAIN_DEFAULTS)
@@ -52,7 +53,7 @@ def _autocorr_peak(signal, sr, min_hz=2.0, max_hz=20.0):
 class Sound:
     # stored with every entry; Tudo.reanalyseEntries(onlyOutdated=True)
     # re-runs entries analysed with an older version
-    ANALYSIS_VERSION = "2026-10-21"
+    ANALYSIS_VERSION = "2026-10-21b"     # b: onset detection
 
     def __init__(
         self, path = (48000, 3.14, "sine", 440),
@@ -62,7 +63,7 @@ class Sound:
         windowSize = 2**12, hopLength= 2**11,
         mfccSettings=None, attackSettings=None, sustainSettings=None,
         sineToleranceCents=33, sineHistogramSize=16,
-        sineWindowSize=2**14, sineHopLength=2**12):
+        sineWindowSize=2**14, sineHopLength=2**12, onsetSettings=None):
         """
         Load and analyze a sound file.
         """
@@ -91,6 +92,9 @@ class Sound:
         # files shorter than one analysis window (e.g. 0.05 s hits) are
         # zero-padded so every frame-based analysis gets at least one frame;
         # durationSec keeps the real length
+        self.originalNumSamples = len(self.soundfile)   # before any padding
+        self.onsetSettings = dict(ONSET_DEFAULTS, **(onsetSettings or {}))
+        self.onsets = None
         if len(self.soundfile) < self.windowSize:
             self.soundfile = np.pad(self.soundfile, (0, self.windowSize - len(self.soundfile)))
             self.numSamples = len(self.soundfile)
@@ -366,6 +370,23 @@ class Sound:
             minHz=minHz, maxHz=maxHz)
         return self.spectralFeatures
 
+    def getOnsets(self, **settings):
+        """
+        Onset detection like FluCoMa's fluid.onsetslice~ (see Onsets.py).
+        Default: metric 2 (SpectralFlux), threshold 0.3. kwargs override
+        self.onsetSettings for this call.
+
+        self.onsets : dict numOnsets, onsetTimes (s), onsetRate (per s),
+                      ioiMeanSec, ioiRegularity (1 = evenly spaced, needs
+                      3+ onsets), onsetSettings
+        """
+        s = dict(self.onsetSettings, **settings)
+        times, info = detectOnsets(self.soundfile[:self.originalNumSamples], self.samplerate, s)
+        self.onsets = onsetMetrics(times, self.durationSec)
+        self.onsets["onsetSettings"] = info["settings"]
+        self.onsetFunction = info
+        return self.onsets["onsetTimes"]
+
     def getTimbreSlots(self):
         """
         Fixed-size MFCC matrices for neural-network training:
@@ -604,6 +625,8 @@ class Sound:
         self.analysisDict.update(analysisDictEntries(self.spectralFeatures))
         # timbre slots (MFCC matrices for training)
         self.getTimbreSlots()
+        self.getOnsets()
+        self.analysisDict.update(self.onsets)
         for k, v in self.timbreSlots.items():
             self.analysisDict[k] = v.tolist() if isinstance(v, np.ndarray) else v
         self.analysisDict["mfccSettings"] = slotSettingsRecord(

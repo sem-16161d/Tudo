@@ -2,7 +2,7 @@
 # reanalyseDatabase.py — rerun the analysis for every entry in the database
 #
 # Updates all analysis columns with the current Tudo code (sine histogram,
-# spectral features, MFCC slots, dynamic profile, fluctuations, ...).
+# onsets, spectral features, MFCC slots, dynamic profile, fluctuations, ...).
 # Identifiers, transposability and paths are kept.
 #
 # Safe to interrupt: with ONLY_OUTDATED = True a restart continues with the
@@ -26,6 +26,9 @@ UPDATE_TAGS = True       # also fix umlaut tags and add missing folder/file-name
 SINE_SETTINGS = {"toleranceCents": 33, "size": 16,
                  "windowSize": 2**14, "hopLength": 2**12}
 
+# onset detection (FluCoMa onsetslice parameters, see Onsets.py)
+ONSET_SETTINGS = {"metric": 2, "threshold": 0.3}
+
 # optional: only part of the library, same conditions as t.search(...)
 # e.g. CONDITIONS = dict(pathContains="DRUM_MACHINES")
 CONDITIONS = {}
@@ -36,12 +39,10 @@ CONDITIONS = {}
 t = Tudo(DB_PATH)
 t.connect()
 t.sineSettings = SINE_SETTINGS
+t.onsetSettings = ONSET_SETTINGS
 
 # make sure all new columns exist before anything is selected
-t.addMissingColumns(t.DYNAMIC_PROFILE_COLUMNS, TABLE)
-t.addMissingColumns(t.TIMBRE_SLOT_COLUMNS, TABLE)
-t.addMissingColumns([("sineHistogram", "JSON"), ("sineToleranceCents", "FLOAT"),
-                     ("analysisVersion", "TEXT")], TABLE)
+t.ensureColumns(TABLE)
 
 total = t.count(TABLE, **CONDITIONS)
 ids = None
