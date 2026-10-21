@@ -15,6 +15,8 @@ Parameters (FluCoMa names):
                             9 RComplexDev     ComplexDev, rising bins only
     threshold       0.3     onset when the filtered curve rises above it
     minSliceLength  2       minimum distance between onsets, in hops
+    minSliceLengthMs None   the same in milliseconds; overrides minSliceLength
+                            when set (rounded up to whole hops)
     filterSize      5       median filter (frames) subtracted from the curve
                             (adaptive threshold: steady levels are ignored)
     frameDelta      0       samples between compared frames for metrics
@@ -56,7 +58,8 @@ METRICS = ("Energy", "HFC", "SpectralFlux", "MKL", "IS", "Cosine",
 
 ONSET_DEFAULTS = dict(metric=2, threshold=0.3, minSliceLength=2, filterSize=5,
                       frameDelta=0, windowSize=1024, hopSize=-1, fftSize=-1,
-                      normalise=True, minLevelDb=-60, relativeFloorDb=-25, filterLag=0)
+                      normalise=True, minLevelDb=-60, relativeFloorDb=-25, filterLag=0,
+                      minSliceLengthMs=None)
 
 _EPS = 1e-10
 
@@ -177,6 +180,9 @@ def detectOnsets(signal, sr, settings=None):
     numSamples = s.pop("_numSamples")
     lag = s["filterSize"] if s["filterLag"] is None else int(s["filterLag"])
     filtered = odf - _causalMedian(odf, s["filterSize"], lag)
+    if s.get("minSliceLengthMs") is not None:
+        s["minSliceLength"] = max(1, int(np.ceil(float(s["minSliceLengthMs"]) / 1000.0
+                                                 * sr / s["hopSize"])))
     above = filtered > s["threshold"]
     if s["minLevelDb"] is not None and energy.max() > 0:
         above &= 10 * np.log10(energy / energy.max() + 1e-30) >= s["minLevelDb"]
