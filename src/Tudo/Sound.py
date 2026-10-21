@@ -10,7 +10,7 @@ import numpy as np
 from scipy.signal import find_peaks
 from itertools import combinations
 from Tudo.DynamicProfile import dynamicProfile
-from Tudo.Onsets import detectOnsets, onsetMetrics, ONSET_DEFAULTS
+from Tudo.Onsets import detectOnsets, onsetMetrics, plotOnsets, ONSET_DEFAULTS
 from Tudo.SpectralFeatures import spectralFeatures, analysisDictEntries, _autocorrPeak
 from Tudo.MFCC import (summariseMfcc, timbreSlots, slotSettingsRecord,
                        SUMMARY_DEFAULTS, ATTACK_DEFAULTS, SUSTAIN_DEFAULTS)
@@ -53,7 +53,7 @@ def _autocorr_peak(signal, sr, min_hz=2.0, max_hz=20.0):
 class Sound:
     # stored with every entry; Tudo.reanalyseEntries(onlyOutdated=True)
     # re-runs entries analysed with an older version
-    ANALYSIS_VERSION = "2026-10-21b"     # b: onset detection
+    ANALYSIS_VERSION = "2026-10-21c"     # b: onset detection, c: onset noise floor
 
     def __init__(
         self, path = (48000, 3.14, "sine", 440),
@@ -386,6 +386,14 @@ class Sound:
         self.onsets["onsetSettings"] = info["settings"]
         self.onsetFunction = info
         return self.onsets["onsetTimes"]
+
+    def plotOnsets(self, savePath=None, show=True, **settings):
+        """Waveform with onsets + onset function and threshold (matplotlib)."""
+        self.getOnsets(**settings)
+        title = os.path.basename(self.path) if self.path else ""
+        return plotOnsets(self.soundfile[:self.originalNumSamples], self.samplerate,
+                          self.onsets["onsetTimes"], self.onsetFunction,
+                          title=title, savePath=savePath, show=show)
 
     def getTimbreSlots(self):
         """

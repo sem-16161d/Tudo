@@ -524,6 +524,26 @@ class Tudo(PSQL):
             out.append(item)
         return out
 
+    def plotOnsets(self, target, savePath=None, show=True, tableName="soundfile_analysis", **settings):
+        """
+        Show the onsets of a sound: waveform with numbered onset markers and
+        the onset function with its threshold.
+        target   : database id or file path
+        settings : override t.onsetSettings for this plot, e.g. threshold=0.2
+        Prints the onset times stored in the database for comparison.
+        """
+        if isinstance(target, (int, np.integer)):
+            rows = self.search(tableName, id=int(target), columns=["path", "onsetTimes"])
+        else:
+            rows = self.search(tableName, path=target, columns=["path", "onsetTimes"])
+        path = rows[0]["path"] if rows else target
+        if rows:
+            print(f"Tudo: stored onsets: {rows[0]['onsettimes']}")
+        sound = self._sound(path)
+        fig = sound.plotOnsets(savePath=savePath, show=show, **settings)
+        print(f"Tudo: onsets now:    {sound.onsets['onsetTimes']}")
+        return fig
+
     def searchPaths(self, tableName="soundfile_analysis", **conditions):
         """Like search, but returns only the file paths."""
         conditions["columns"] = ["path"]

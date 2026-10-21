@@ -28,6 +28,15 @@ Additional:
                             means the same for quiet and loud samples
     minLevelDb      -60     ignore frames more than this below the loudest
                             frame (decay tails, noise floor), None = off
+    relativeFloorDb -25     relative metrics (SpectralFlux, Complex*) are divided
+                            by the frame's magnitude sum, but by no less than
+                            this level below the loudest frame, so noise
+                            before the sound doesn't count as an onset
+    filterLag       0       the median baseline ends this many frames before
+                            the current frame. 0 = FluCoMa-like; e.g. 5 also
+                            catches gradual onsets (legato note changes,
+                            ~60-100 ms rises) at the cost of a few extra
+                            onsets in fluctuating noise
 
 Scale: magnitudes are scaled so a full-scale sine has magnitude 1.
 SpectralFlux and the complex-domain metrics are divided by the frame's
@@ -47,7 +56,7 @@ METRICS = ("Energy", "HFC", "SpectralFlux", "MKL", "IS", "Cosine",
 
 ONSET_DEFAULTS = dict(metric=2, threshold=0.3, minSliceLength=2, filterSize=5,
                       frameDelta=0, windowSize=1024, hopSize=-1, fftSize=-1,
-                      normalise=True, minLevelDb=-60)
+                      normalise=True, minLevelDb=-60, relativeFloorDb=-25, filterLag=0)
 
 _EPS = 1e-10
 
@@ -96,6 +105,12 @@ def onsetFunction(signal, sr, settings=None):
     mag = np.abs(X)
     K, n = mag.shape
     metric = s["metric"]
+    # relative metrics are divided by the frame's magnitude sum, but never by
+    # less than relativeFloorDb below the loudest frame: otherwise a little
+    # noise before the sound counts as "100 % new"
+    msum = mag.sum(axis=0)
+    floor = msum.max() * 10 ** (s["relativeFloorDb"] / 20) if msum.max() > 0 else _EPS
+    norm = np.maximum(msum, floor)
     d = max(1, 1 + int(round(s["frameDelta"] / s["hopSize"]))) if s["frameDelta"] else 1
 
     def prev(a, lag=1):
@@ -109,7 +124,7 @@ def onsetFunction(signal, sr, settings=None):
         k = np.arange(K)[:, None] / K
         odf = (k * mag ** 2).sum(axis=0)
     elif metric == 2:                                 # SpectralFlux
-        odf = np.maximum(mag - prev(mag, d), 0).sum(axis=0) / (mag.sum(axis=0) + _EPS)
+        odf = np.maximum(mag - prev(mag, d), 0).sum(axis=0) / norm
     elif metric == 3:                                 # MKL
         odf = np.maximum(np.log((mag + _EPS) / (prev(mag, d) + _EPS)), 0).mean(axis=0)
     elif metric == 4:                                 # Itakura-Saito
@@ -137,17 +152,18 @@ def onsetFunction(signal, sr, settings=None):
             diff = np.abs(X - pred)
             if metric == 9:                           # RComplexDev: rising bins only
                 diff = np.where(mag >= m1, diff, 0.0)
-            odf = diff.sum(axis=0) / (mag.sum(axis=0) + m1.sum(axis=0) + _EPS)
+            odf = diff.sum(axis=0) / (norm + np.maximum(m1.sum(axis=0), floor))
     s["_frameEnergy"] = (mag ** 2).sum(axis=0)
     s["_numSamples"] = len(x)
     return odf, s
 
 
-def _causalMedian(x, size):
+def _causalMedian(x, size, lag=0):
+    """Median of the `size` frames ending `lag` frames before each frame."""
     if size <= 1:
         return np.zeros_like(x)
-    pad = np.concatenate([np.zeros(size - 1), x])        # silence before the file
-    windows = np.lib.stride_tricks.sliding_window_view(pad, size)
+    pad = np.concatenate([np.zeros(size - 1 + lag), x])  # silence before the file
+    windows = np.lib.stride_tricks.sliding_window_view(pad, size)[:len(x)]
     return np.median(windows, axis=1)
 
 
@@ -159,7 +175,8 @@ def detectOnsets(signal, sr, settings=None):
     odf, s = onsetFunction(signal, sr, settings)
     energy = s.pop("_frameEnergy")
     numSamples = s.pop("_numSamples")
-    filtered = odf - _causalMedian(odf, s["filterSize"])
+    lag = s["filterSize"] if s["filterLag"] is None else int(s["filterLag"])
+    filtered = odf - _causalMedian(odf, s["filterSize"], lag)
     above = filtered > s["threshold"]
     if s["minLevelDb"] is not None and energy.max() > 0:
         above &= 10 * np.log10(energy / energy.max() + 1e-30) >= s["minLevelDb"]
@@ -191,3 +208,45 @@ def onsetMetrics(times, durationSec):
         cv = ioi.std() / ioi.mean() if ioi.mean() > 0 else 1.0
         out["ioiRegularity"] = float(np.clip(1.0 - cv, 0.0, 1.0))
     return out
+
+
+def plotOnsets(signal, sr, times, info=None, title="", savePath=None, show=True):
+    """
+    Waveform with onset markers; if `info` from detectOnsets() is given,
+    a second panel shows the onset function, its filtered version and the
+    threshold. Returns the matplotlib figure.
+    """
+    import matplotlib.pyplot as plt
+    x = np.asarray(signal, dtype=float)
+    t = np.arange(len(x)) / sr
+    rows = 2 if info is not None else 1
+    fig, axes = plt.subplots(rows, 1, figsize=(12, 3.2 * rows), sharex=True, squeeze=False)
+    ax = axes[0, 0]
+    ax.plot(t, x, color="0.35", linewidth=0.5)
+    for i, o in enumerate(times):
+        ax.axvline(o, color="crimson", linewidth=1.2)
+        ax.text(o, 1.02, str(i + 1), color="crimson", fontsize=8, ha="center",
+                transform=ax.get_xaxis_transform())
+    ax.set_ylabel("amplitude")
+    ax.set_title(f"{title}   {len(times)} onsets" if title else f"{len(times)} onsets", loc="left")
+    ax.margins(x=0)
+    if info is not None:
+        s = info["settings"]
+        ft = np.arange(len(info["odf"])) * s["hopSize"] / sr
+        ax2 = axes[1, 0]
+        ax2.plot(ft, info["odf"], color="0.6", linewidth=0.8, label="onset function")
+        ax2.plot(ft, info["filtered"], color="tab:blue", linewidth=1.0, label="filtered (minus median)")
+        ax2.axhline(s["threshold"], color="crimson", linestyle="--", linewidth=1.0,
+                    label=f"threshold {s['threshold']}")
+        for o in times:
+            ax2.axvline(o, color="crimson", linewidth=0.6, alpha=0.5)
+        ax2.set_ylabel(METRICS[s["metric"]])
+        ax2.legend(loc="upper right", fontsize=8)
+        ax2.margins(x=0)
+    axes[-1, 0].set_xlabel("time (s)")
+    fig.tight_layout()
+    if savePath:
+        fig.savefig(savePath, dpi=130)
+    if show:
+        plt.show()
+    return fig
