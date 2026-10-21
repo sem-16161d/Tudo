@@ -301,6 +301,8 @@ class Tudo(PSQL):
                         own folder tags). False = only this folder.
         skipExisting  : skip files whose path is already in the database
         """
+        if not os.path.isdir(pathToFolder):
+            raise FileNotFoundError(f"Tudo.newEntriesFromFolder: folder not found: {pathToFolder}")
         if recursive:
             files = sorted(os.path.join(d, f) for d, _, fs in os.walk(pathToFolder) for f in fs)
         else:
@@ -308,6 +310,7 @@ class Tudo(PSQL):
         files = [f for f in files if os.path.isfile(f) and f.lower().endswith(tuple(extensions))
                  and not os.path.basename(f).startswith("._")]
         existing = set(self.searchPaths()) if skipExisting else set()
+        print(f"Tudo: {len(files)} sound files in {pathToFolder}")
 
         for i, filePath in enumerate(files):
             name = os.path.relpath(filePath, pathToFolder)
