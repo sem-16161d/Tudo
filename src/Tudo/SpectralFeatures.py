@@ -194,8 +194,15 @@ def mostCommonValue(values, weights=None, bins=30, log=False):
     if hi - lo < 1e-12:
         return float(np.median(v))
     hist, edges = np.histogram(x, bins=bins, range=(lo, hi), weights=w)
+    if hist.max() <= 0:
+        # very few frames: the 2-98 % range can exclude every value,
+        # use the full range instead
+        hist, edges = np.histogram(x, bins=max(1, min(bins, len(x))),
+                                   range=(x.min(), x.max()), weights=w)
     b = int(np.argmax(hist))
     sel = (x >= edges[b]) & (x <= edges[b + 1])
+    if not sel.any():
+        sel = np.ones(len(x), dtype=bool)
     xs, ws = x[sel], w[sel]
     order = np.argsort(xs)
     cw = np.cumsum(ws[order])

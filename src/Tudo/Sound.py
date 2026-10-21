@@ -81,6 +81,13 @@ class Sound:
         
         self.windowSize = int(windowSize)
         self.hopLength = int(hopLength)
+
+        # files shorter than one analysis window (e.g. 0.05 s hits) are
+        # zero-padded so every frame-based analysis gets at least one frame;
+        # durationSec keeps the real length
+        if len(self.soundfile) < self.windowSize:
+            self.soundfile = np.pad(self.soundfile, (0, self.windowSize - len(self.soundfile)))
+            self.numSamples = len(self.soundfile)
         
         self.absSig = []
         self.peakAmplitude = 0
@@ -229,7 +236,10 @@ class Sound:
         self.mainPitchHz = self.sineHistogram[0][0]
         # white noise has a max value of ideally 0.58, so to normalize this became the factor
         if len(self.sineHistogram) > 1:
-            self.spectralDensity = np.clip(((self.sineHistogram[maxPeaks-1][1])/(self.sineHistogram[0][1]+1e-06)/0.58)**0.5, 0,1)
+            # weakest of the (up to) maxPeaks strongest clusters vs. the strongest;
+            # very short files can have fewer than maxPeaks clusters
+            weakest = self.sineHistogram[min(maxPeaks, len(self.sineHistogram)) - 1][1]
+            self.spectralDensity = np.clip((weakest/(self.sineHistogram[0][1]+1e-06)/0.58)**0.5, 0,1)
         else:
             self.spectralDensity = 0
 
@@ -478,6 +488,8 @@ class Sound:
 
     def analyse(self):
         self.getPeakAmplitude()
+        if self.peakAmplitude == 0:
+            raise ValueError("Sound.analyse: file is silent")
         self.getRoughness()
         self.getSpectralCentroid()
         self.pitchcentroidratio =  self.spectralCentroid/self.mainPitchHz
