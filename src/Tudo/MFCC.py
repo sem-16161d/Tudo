@@ -229,10 +229,27 @@ def mfccSlot(signal, sr, startSec, slotSettings, floorVector=None):
 
 
 def quietestFrame(signal, sr, slotSettings):
+    """
+    MFCC vector of the file's quietest analysis frame (used as padding).
+    Finds the frame by its energy first (cheap, cumulative sum) and only
+    computes the MFCC of that one frame, so long files need no full
+    analysis at slot resolution.
+    """
     s = {k: v for k, v in slotSettings.items() if k not in ("numFrames", "prerollSec")}
-    coeffs, info = mfcc(signal, sr, **s)
-    energy = (info["mag"] ** 2).sum(axis=0)
-    return coeffs[:, int(np.argmin(energy))]
+    x, sr2 = _resample(signal, sr, s.get("analysisSampleRate"))
+    r = resolveSettings(s, sr2)
+    win, hop = r["windowSize"], r["hopSize"]
+    pad = {0: 0, 1: win // 2, 2: win - hop}[r["padding"]]
+    x = np.pad(np.asarray(x, dtype=float), (pad, pad))
+    if len(x) < win:
+        x = np.pad(x, (0, win - len(x)))
+    n = 1 + (len(x) - win) // hop
+    cs = np.concatenate([[0.0], np.cumsum(x ** 2)])
+    starts = np.arange(n) * hop
+    i = int(np.argmin(cs[starts + win] - cs[starts]))
+    coeffs, _ = mfcc(x[i * hop:i * hop + win], sr2,
+                     **dict(s, padding=0, analysisSampleRate=None))
+    return coeffs[:, 0]
 
 
 def timbreSlots(signal, sr, attackSettings=None, sustainSettings=None):

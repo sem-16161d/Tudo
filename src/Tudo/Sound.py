@@ -183,7 +183,7 @@ class Sound:
         return all_freqs, all_mags
 
     def _genAbsSig(self):
-        self.absSig = [abs(f) for f in self.soundfile]
+        self.absSig = np.abs(self.soundfile)
 
     def _amp2dB(self,amplitude):
         if amplitude == 0:
@@ -194,12 +194,14 @@ class Sound:
     def getPeakAmplitude(self):
         if len(self.absSig)== 0:
             self._genAbsSig()
-        self.peakAmplitude = max(self.absSig)
+        self.peakAmplitude = float(np.max(self.absSig))
         self.peakdB = self._amp2dB(self.peakAmplitude)
         return    
 
     def calculateDynamicEnv(self,numMinima=3, numMaxima=3, resolution = 10):
-        rawEnv = Envelope(self.absSig)
+        if len(self.absSig) == 0:
+            self._genAbsSig()
+        rawEnv = Envelope(list(self.absSig))
         rawEnv.reduceEnvPoints(numMinima=numMinima, numMaxima=numMaxima, resolution=resolution)
         self.simpleDynamicEnvNorm = rawEnv.reducedEnv
 
@@ -480,7 +482,9 @@ class Sound:
         self.getSpectralCentroid()
         self.pitchcentroidratio =  self.spectralCentroid/self.mainPitchHz
         self.getFlatness()
-        self.calculateDynamicEnv(3,3,resolution=10)
+        # calculateDynamicEnv() is not stored in the database and takes most of
+        # the analysis time on long files (it runs on every single sample), so
+        # analyse() skips it. Call sound.calculateDynamicEnv() when needed.
         self.getFluctuations()
         self.getDynamicProfile()
         self.getSpectralFeatures()
@@ -572,27 +576,30 @@ def cents_distance(f1, f2):
 
 
 def cluster_by_cents(pairs, tolerance_cents=20):
-
+    """
+    Greedy clustering of (frequency, magnitude_dB) pairs: each pair joins the
+    first cluster (in creation order) whose centre is within tolerance_cents,
+    otherwise it starts a new cluster. Same result as the original loop, but
+    the distance to all centres is computed at once with numpy.
+    """
     clusters = []
-
-    for f, mag_db in pairs:
-
-        placed = False
-
-        for cluster in clusters:
-            center = cluster["center"]
-            if abs(cents_distance(f, center)) <= tolerance_cents:
-                cluster["freqs"].append(f)
-                cluster["mags"].append(mag_db)
-                placed = True
-                break
-
-        if not placed:
-            clusters.append({
-                "center": f,
-                "freqs": [f],
-                "mags": [mag_db]
-            })
+    centers = np.empty(64)
+    n = 0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for f, mag_db in pairs:
+            if n:
+                d = np.abs(1200 * np.log2(f / centers[:n] + 0.00001))   # = cents_distance
+                hit = np.flatnonzero(d <= tolerance_cents)
+                if hit.size:
+                    c = clusters[hit[0]]
+                    c["freqs"].append(f)
+                    c["mags"].append(mag_db)
+                    continue
+            if n == len(centers):
+                centers = np.resize(centers, 2 * n)
+            centers[n] = f
+            n += 1
+            clusters.append({"center": f, "freqs": [f], "mags": [mag_db]})
 
     # compute dominance per cluster
     for cluster in clusters:
