@@ -18,6 +18,13 @@ Tag conditions work on the `identifiers` JSON column:
     anyTags=["buzz", "rumbling"]      # must have AT LEAST ONE
     noTags=["noise"]                  # must have NONE of these
 
+Partial tag matching (case-insensitive substrings):
+
+    tagContains="radar"               # some tag contains "radar"
+    tagContains=["radar", "vocal"]    # ... AND some tag contains "vocal"
+    anyTagContains=["laugh", "sigh"]  # some tag contains AT LEAST ONE
+    noTagContains="noise"             # no tag contains "noise"
+
 Other options:
 
     pathContains="BASSOON"            # case-insensitive substring of path
@@ -38,6 +45,7 @@ OPERATORS = {
 
 SPECIAL_KEYS = {
     "tags", "anyTags", "noTags", "pathContains",
+    "tagContains", "anyTagContains", "noTagContains",
     "orderBy", "limit", "offset", "columns", "random",
 }
 
@@ -54,6 +62,17 @@ def _column(name, validColumns):
             f"Tudo.search: unknown column '{name}'. "
             f"Available: {', '.join(sorted(validColumns))}")
     return col
+
+
+def _likePattern(text):
+    """Substring pattern for ILIKE, with LIKE wildcards in the text escaped."""
+    text = str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{text}%"
+
+
+_TAG_LIKE = ("EXISTS (SELECT 1 FROM jsonb_array_elements_text("
+             "COALESCE(identifiers::jsonb, '[]'::jsonb)) AS tag "
+             "WHERE tag ILIKE %s ESCAPE '\\')")
 
 
 def _asList(x):
@@ -108,9 +127,22 @@ def buildSearchQuery(table="soundfile_analysis", validColumns=None, **conditions
         where.append("NOT (COALESCE(identifiers::jsonb, '[]'::jsonb) ?| %s)")
         params.append(_asList(conditions["noTags"]))
 
+    if conditions.get("tagContains"):
+        for sub in _asList(conditions["tagContains"]):
+            where.append(_TAG_LIKE)
+            params.append(_likePattern(sub))
+    if conditions.get("anyTagContains"):
+        subs = _asList(conditions["anyTagContains"])
+        where.append("(" + " OR ".join([_TAG_LIKE] * len(subs)) + ")")
+        params += [_likePattern(x) for x in subs]
+    if conditions.get("noTagContains"):
+        for sub in _asList(conditions["noTagContains"]):
+            where.append("NOT " + _TAG_LIKE)
+            params.append(_likePattern(sub))
+
     if conditions.get("pathContains"):
-        where.append("path ILIKE %s")
-        params.append(f"%{conditions['pathContains']}%")
+        where.append("path ILIKE %s ESCAPE '\\'")
+        params.append(_likePattern(conditions["pathContains"]))
 
     cols = conditions.get("columns")
     select = ", ".join(_column(c, validColumns) for c in _asList(cols)) if cols else "*"
