@@ -21,7 +21,8 @@ class Tudo(PSQL):
         # see MFCC.py). Example: t.mfccSettings["attack"]["numFrames"] = 96
         self.mfccSettings = {"summary": {}, "attack": {}, "sustain": {}}
         # sine histogram: error band in cents (+/-) and number of pitches
-        self.sineSettings = {"toleranceCents": 33, "size": 16}
+        self.sineSettings = {"toleranceCents": 33, "size": 16,
+                             "windowSize": 2**14, "hopLength": 2**12}
     
     def initializeNewDatabase(self):
         newTudo = input("do you really want to create a new Tudo? (y/n)")
@@ -63,6 +64,7 @@ class Tudo(PSQL):
                 ("spectralDensity", "FLOAT"),
                 ("sineHistogram", "JSON"),
                 ("sineToleranceCents", "FLOAT"),
+                ("analysisVersion", "TEXT"),
                 ("roughness", "FLOAT"),
                 ("centroidMostCommon", "FLOAT"),
                 ("pitchcentroidratio", "FLOAT"),
@@ -145,7 +147,9 @@ class Tudo(PSQL):
                      attackSettings=self.mfccSettings.get("attack"),
                      sustainSettings=self.mfccSettings.get("sustain"),
                      sineToleranceCents=self.sineSettings.get("toleranceCents", 33),
-                     sineHistogramSize=self.sineSettings.get("size", 16))
+                     sineHistogramSize=self.sineSettings.get("size", 16),
+                     sineWindowSize=self.sineSettings.get("windowSize", 2**14),
+                     sineHopLength=self.sineSettings.get("hopLength", 2**12))
 
     def _columnTypes(self, tableName):
         if not hasattr(self, "_colTypes"):
@@ -529,21 +533,29 @@ class Tudo(PSQL):
                 continue
             self.writeAnalysis(id, values, tableName)
 
-    def reanalyseEntries(self, tableName="soundfile_analysis", ids=None):
+    def reanalyseEntries(self, tableName="soundfile_analysis", ids=None, onlyOutdated=False):
         """
         Re-run the full Sound.analyse() on entries already in the database
         and overwrite all analysis columns (identifiers and transposability
         are kept). Adds missing columns first. ids=None -> all entries.
+        onlyOutdated=True skips entries already analysed with the current
+        Sound.ANALYSIS_VERSION, so an interrupted run can simply be restarted.
         """
         self.addMissingColumns(self.DYNAMIC_PROFILE_COLUMNS, tableName)
         self.addMissingColumns(spectralColumns(), tableName)
         self.addMissingColumns(self.TIMBRE_SLOT_COLUMNS, tableName)
-        self.addMissingColumns([("sineHistogram", "JSON"), ("sineToleranceCents", "FLOAT")], tableName)
+        self.addMissingColumns([("sineHistogram", "JSON"), ("sineToleranceCents", "FLOAT"),
+                                ("analysisVersion", "TEXT")], tableName)
         sql = f"SELECT id, path, transposability FROM {tableName}"
-        params = None
+        where, params = [], []
         if ids is not None:
-            sql += " WHERE id = ANY(%s)"
-            params = (list(ids),)
+            where.append("id = ANY(%s)")
+            params.append(list(ids))
+        if onlyOutdated:
+            where.append("analysisVersion IS DISTINCT FROM %s")
+            params.append(Sound.ANALYSIS_VERSION)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         self.cur.execute(sql + " ORDER BY id", params)
         rows = self.cur.fetchall()
         self.conn.commit()

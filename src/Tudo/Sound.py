@@ -50,6 +50,10 @@ def _autocorr_peak(signal, sr, min_hz=2.0, max_hz=20.0):
 
 
 class Sound:
+    # stored with every entry; Tudo.reanalyseEntries(onlyOutdated=True)
+    # re-runs entries analysed with an older version
+    ANALYSIS_VERSION = "2026-10-21"
+
     def __init__(
         self, path = (48000, 3.14, "sine", 440),
         #self, path = (48000, 3.14, "white"),
@@ -57,7 +61,8 @@ class Sound:
         transposability = 1,# 0 = chromatic, -1 = false, 1 = freely
         windowSize = 2**12, hopLength= 2**11,
         mfccSettings=None, attackSettings=None, sustainSettings=None,
-        sineToleranceCents=33, sineHistogramSize=16):
+        sineToleranceCents=33, sineHistogramSize=16,
+        sineWindowSize=2**14, sineHopLength=2**12):
         """
         Load and analyze a sound file.
         """
@@ -100,6 +105,12 @@ class Sound:
         self.sineToleranceCents = float(sineToleranceCents)
         self.sineHistogramSize = int(sineHistogramSize)
         self.sinePitches = None       # detailed histogram (list of dicts)
+        # the sine histogram uses its own, larger STFT: 2**14 samples resolve
+        # pitches ~4x closer than the 2**12 window used for everything
+        # time-related (fluctuations, spectral features)
+        self.sineWindowSize = int(sineWindowSize)
+        self.sineHopLength = int(sineHopLength)
+        self.D_sine = None
         self.mainPitchHz, self.spectralDensity, self.roughness, self.spectralCentroid=None, None, None, None
         self.flatnessMedian = None
 
@@ -125,7 +136,8 @@ class Sound:
         self.analysisDict = {"identifiers":[], "transposability": transposability}
 
 
-    def sine_features_frame(self, frame, detectionThreshold=-60, sortBy="magnitude", maxPeaks=None):
+    def sine_features_frame(self, frame, detectionThreshold=-60, sortBy="magnitude", maxPeaks=None,
+                            windowSize=None):
         """
         Extract sinusoidal peak features from ONE complex STFT frame.
 
@@ -142,10 +154,11 @@ class Sound:
         mags  : np.array (dB)
         """
 
-        bins = self.windowSize // 2 + 1
+        windowSize = windowSize or self.windowSize
+        bins = windowSize // 2 + 1
         fftSize = 2 * (bins - 1)
 
-        scale = 1.0 / (self.windowSize / 4.0)
+        scale = 1.0 / (windowSize / 4.0)
 
         mag = np.abs(frame) * scale
         log_mag = 20 * np.log10(np.maximum(mag, 1e-12))
@@ -181,21 +194,25 @@ class Sound:
 
         return freqs, mags
 
-    def sine_features(self, detectionThreshold=-60, sortBy="magnitude", maxPeaks=None):
+    def sine_features(self, detectionThreshold=-60, sortBy="magnitude", maxPeaks=None,
+                      D=None, windowSize=None):
         """
         python implementation of 
         https://github.com/flucoma/flucoma-core/blob/e3cadeb8382e9e473f3b5f94a2f3a0c93fa082a7/include/flucoma/algorithms/public/SineFeature.hpp
         """
         all_freqs = []
         all_mags = []
-        if self.D is None:
-            self.stft()
-        for frame in self.D.T:  # pyright: ignore[reportOptionalMemberAccess]
+        if D is None:
+            if self.D is None:
+                self.stft()
+            D, windowSize = self.D, self.windowSize
+        for frame in D.T:  # pyright: ignore[reportOptionalMemberAccess]
             f, m = self.sine_features_frame(
                 frame,
                 detectionThreshold=detectionThreshold,
                 sortBy=sortBy,
-                maxPeaks=maxPeaks
+                maxPeaks=maxPeaks,
+                windowSize=windowSize
             )
             all_freqs.append(f)
             all_mags.append(m)
@@ -240,7 +257,8 @@ class Sound:
         """
         Sine histogram: the most prominent pitches of the whole sample.
 
-        Per STFT frame the maxPeaks strongest sinusoidal peaks are detected.
+        Per STFT frame (sineWindowSize, default 2**14) the maxPeaks strongest
+        sinusoidal peaks are detected.
         All peaks of all frames are grouped into pitch clusters with an
         error band of +/- toleranceCENTS (default self.sineToleranceCents
         = 33). Each cluster's weight is the sum of the linear amplitudes of
@@ -256,7 +274,14 @@ class Sound:
         """
         tol = self.sineToleranceCents if toleranceCENTS is None else float(toleranceCENTS)
         size = self.sineHistogramSize if histogramSize is None else int(histogramSize)
-        self.freq_list, self.mag_list = self.sine_features(detectionThreshold=detectionThresholddB,maxPeaks=maxPeaks)
+        if self.D_sine is None:
+            y = self.soundfile
+            if len(y) < self.sineWindowSize:
+                y = np.pad(y, (0, self.sineWindowSize - len(y)))
+            self.D_sine = librosa.stft(y, n_fft=self.sineWindowSize, hop_length=self.sineHopLength)
+        self.freq_list, self.mag_list = self.sine_features(
+            detectionThreshold=detectionThresholddB, maxPeaks=maxPeaks,
+            D=self.D_sine, windowSize=self.sineWindowSize)
         self.allpairs = [
             (f, m)
             for fl, ml in zip(self.freq_list, self.mag_list)
@@ -380,9 +405,14 @@ class Sound:
         frame_rate = self.samplerate / self.hopLength
 
         # --- build per-frame dominant-frequency track ---
-        if self.freq_list is not None and len(self.freq_list) > 0:
+        # (on the small analysis window: the large sine-histogram window
+        #  would smear vibrato and trills)
+        if self.D is None:
+            self.stft()
+        track_freqs, track_mags = self.sine_features(detectionThreshold=-144, maxPeaks=1)
+        if len(track_freqs) > 0:
             pitch_track = []
-            for freqs, mags in zip(self.freq_list, self.mag_list):
+            for freqs, mags in zip(track_freqs, track_mags):
                 if len(freqs) > 0:
                     pitch_track.append(float(freqs[0]))   # already sorted by magnitude
                 else:
@@ -548,6 +578,7 @@ class Sound:
             "spectralDensity": self.spectralDensity,
             "sineHistogram": self.sinePitches,
             "sineToleranceCents": self.sineToleranceCents,
+            "analysisVersion": Sound.ANALYSIS_VERSION,
             "roughness": self.roughness,
             "flatnessMedian": self.flatnessMedian,
             # fluctuations
@@ -638,8 +669,10 @@ def pitch_histogram(pairs, frames, numFrames, tolerance_cents=33, size=16):
     f = np.array([p[0] for p in pairs], dtype=float)
     db = np.array([p[1] for p in pairs], dtype=float)
     fr = np.asarray(frames)
-    ok = f > 0
+    ok = f >= 20.0                    # ignore DC / sub-audio peaks
     f, db, fr = f[ok], db[ok], fr[ok]
+    if len(f) == 0:
+        return []
     amp = 10 ** (db / 20)
     cents = 1200 * np.log2(f)
     order = np.argsort(-amp, kind="stable")
