@@ -462,7 +462,7 @@ class Tudo(PSQL):
             return {k.lower(): v for k, v in sound.analysisDict.items()}, None
         raise TypeError("Tudo.findSimilar: target must be an id, a path, a Sound or a dict")
 
-    def findSimilar(self, target, k=10, features="timbre", *, weights=None,
+    def findSimilar(self, target, k=10, features=None, *, weights=None,
                     normalise="zscore", balanceVectors=True, metric="euclidean",
                     pca=None, includeTarget=False, returnColumns=("path", "identifiers"),
                     tableName="soundfile_analysis", **conditions):
@@ -479,6 +479,7 @@ class Tudo(PSQL):
         features : preset name ("timbre", "pitch", "dynamics", "fluctuation",
                    "mfcc", "all"), column name, or a list of both.
                    List columns (e.g. specMfccMain) are used element-wise.
+                   Default: the keys of a dict target, otherwise "timbre".
                    With a dict target, features it doesn't contain are dropped.
         weights  : {feature: weight}, default 1 each
         normalise: "zscore" (default), "robust" (median/IQR) or None
@@ -489,10 +490,15 @@ class Tudo(PSQL):
         Returns a list of dicts (nearest first) with id, distance and
         returnColumns. Details of the last run: t.lastSimilarityInfo
         """
+        if features is None:
+            features = [k for k in target if k.lower() != "id"] if isinstance(target, dict) else "timbre"
         feats = resolveFeatures(features)
         targetRow, targetId = self._targetRow(target, feats, tableName)
         if isinstance(target, dict):
+            dropped = [f for f in feats if targetRow.get(f) is None]
             feats = [f for f in feats if targetRow.get(f) is not None]
+            if dropped:
+                print(f"Tudo: target has no value for {dropped}, ignored")
             if not feats:
                 raise ValueError("Tudo.findSimilar: the target dict has none of the features")
         for key in ("limit", "offset", "orderBy", "random", "columns"):
@@ -543,6 +549,42 @@ class Tudo(PSQL):
         fig = sound.plotOnsets(savePath=savePath, show=show, **settings)
         print(f"Tudo: onsets now:    {sound.onsets['onsetTimes']}")
         return fig
+
+    def renderMix(self, sounds, outPath="/private/tmp/tudo_mix.wav", *, play=False,
+                  tableName="soundfile_analysis", **options):
+        """
+        Render all given sounds into one file, playing at the same time.
+
+        sounds  : results of search/findSimilar (dicts with "path"),
+                  file paths, or database ids
+        outPath : output file (.wav / .aif / .flac)
+        play    : play the result right away (macOS afplay)
+        options : see Render.mixFiles, e.g.
+                  align="onset"   first onsets coincide instead of file starts
+                  spread=1.0      spread the files across the stereo field
+                  normaliseEach=False   keep the original level differences
+                  maxDurationSec=10, sr=44100, channels=1, peakDb=-1
+        Returns the output path.
+        """
+        from Tudo.Render import mixFiles
+        paths = []
+        for snd in sounds:
+            if isinstance(snd, dict):
+                paths.append(snd.get("path"))
+            elif isinstance(snd, (int, np.integer)):
+                rows = self.search(tableName, id=int(snd), columns=["path"])
+                paths.append(rows[0]["path"] if rows else None)
+            else:
+                paths.append(snd)
+        found = [p for p in paths if p and os.path.isfile(p)]
+        for p in paths:
+            if p not in found:
+                print(f"Tudo: renderMix skips missing file: {p}")
+        outPath, info = mixFiles(found, outPath, **options)
+        print(f"Tudo: mixed {len(found)} files, {info['durationSec']:.2f} s -> {outPath}")
+        if play:
+            subprocess.Popen(["afplay", outPath])
+        return outPath
 
     def searchPaths(self, tableName="soundfile_analysis", **conditions):
         """Like search, but returns only the file paths."""
