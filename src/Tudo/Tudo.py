@@ -490,6 +490,11 @@ class Tudo(PSQL):
         Returns a list of dicts (nearest first) with id, distance and
         returnColumns. Details of the last run: t.lastSimilarityInfo
         """
+        if isinstance(features, dict):
+            raise TypeError(
+                "Tudo.findSimilar: features is a list of column names / presets to compare, "
+                "not a filter. Pass filters as keyword arguments, e.g. "
+                "t.findSimilar(target, tags=['violin']) or tagContains='violin'")
         if features is None:
             features = [k for k in target if k.lower() != "id"] if isinstance(target, dict) else "timbre"
         feats = resolveFeatures(features)
