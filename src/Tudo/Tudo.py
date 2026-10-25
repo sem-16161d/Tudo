@@ -129,9 +129,26 @@ class Tudo(PSQL):
                     column[1])
 
 
-    def connect(self):
-        self.killAllServerInstances()
-        self.startNewServer()
+    def serverRunning(self):
+        """True if the Postgres server for this database folder is running."""
+        r = subprocess.run(["pg_ctl", "-D", self.librayPath, "status"],
+                           capture_output=True, text=True)
+        return r.returncode == 0
+
+    def connect(self, restart=False):
+        """
+        Connect to the Tudo database.
+        restart=False (default): use the running Postgres server, start it
+            only if it isn't running. Other connections (e.g. the OSC server
+            next to Live) keep working.
+        restart=True: kill all Postgres processes and start fresh (old
+            behaviour; cuts every other connection).
+        """
+        if restart:
+            self.killAllServerInstances()
+            self.startNewServer()
+        elif not self.serverRunning():
+            subprocess.run(["pg_ctl", "-D", self.librayPath, "-w", "start"])
         self.connectToDatabase(self.dbname)
 
     def newEntry(self, tableName="tableNo1"):

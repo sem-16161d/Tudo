@@ -12,7 +12,7 @@ setup(
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
     install_requires=[
-        'numpy', 'librosa', 'scipy', 'soundfile',
+        'numpy', 'librosa', 'scipy', 'soundfile', 'python-osc',
         'GreasyPidgin', 'psycopg2'
     ],
     classifiers=[
