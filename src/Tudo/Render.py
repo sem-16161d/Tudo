@@ -4,7 +4,8 @@ Render several sound files into one file, all playing at the same time.
 """
 
 import os
-from math import gcd
+from fractions import Fraction
+from math import gcd, log2
 
 import numpy as np
 import soundfile as sf
@@ -31,6 +32,16 @@ def _firstOnset(x, sr):
     from Tudo.Onsets import detectOnsets
     times, _ = detectOnsets(x.mean(axis=1), sr)
     return times[0] if times else 0.0
+
+
+def _transpose(x, ratio):
+    """Varispeed by `ratio` (2 = one octave up, half as long). Returns (x, semitones)."""
+    # shortcut: ratio rounded to a fraction with denominator <= 1000 (< 1 cent error)
+    frac = Fraction(1 / ratio).limit_denominator(1000)
+    if frac == 1:
+        return x, 0.0
+    y = resample_poly(x, frac.numerator, frac.denominator, axis=0)
+    return y, 12 * log2(frac.denominator / frac.numerator)
 
 
 def _pan(x, i, n, spread, channels):
@@ -88,7 +99,8 @@ def _renderSingleFiles(paths, layers, outPath, sr, channels, gains, spread,
 
 def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
              normaliseEach=True, gains=None, spread=0.0, peakDb=-1.0,
-             maxDurationSec=None, fadeOutSec=0.05):
+             maxDurationSec=None, fadeOutSec=0.05, forceMainPitch=False,
+             mainPitches=None):
     """
     Mix sound files so they all play at the same time.
 
@@ -109,6 +121,11 @@ def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
                     (equal-power panning, stereo output only)
     peakDb        : peak level of the final mix in dBFS (no clipping)
     maxDurationSec: cut the mix after this time (with a short fade-out)
+    forceMainPitch: False, or a frequency in Hz: every file is transposed
+                    (varispeed, like a sampler: higher = shorter) so that its
+                    main pitch lands on this frequency
+    mainPitches   : main pitch in Hz per file (needed for forceMainPitch;
+                    None entries are left untransposed)
 
     Returns (outPath, info) with the offsets used per file
     (singleFiles: (SINGLE_FILES folder, info with the written files)).
@@ -116,9 +133,15 @@ def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
     paths = [p for p in paths if p]
     if not paths:
         raise ValueError("Render.mixFiles: no files")
-    layers, onsets = [], []
-    for p in paths:
+    if forceMainPitch and mainPitches is None:
+        raise ValueError("Render.mixFiles: forceMainPitch needs mainPitches (one per file)")
+    layers, onsets, semitones = [], [], []
+    for i, p in enumerate(paths):
         x = _load(p, sr, channels)
+        st = 0.0
+        if forceMainPitch and mainPitches[i]:
+            x, st = _transpose(x, float(forceMainPitch) / float(mainPitches[i]))
+        semitones.append(st)
         if normaliseEach:
             peak = np.max(np.abs(x))
             if peak > 0:
@@ -128,8 +151,10 @@ def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
     if align not in ("start", "onset", "singleFiles"):
         raise ValueError("Render.mixFiles: align must be 'start', 'onset' or 'singleFiles'")
     if align == "singleFiles":
-        return _renderSingleFiles(paths, layers, outPath, sr, channels, gains,
-                                  spread, peakDb, maxDurationSec, fadeOutSec)
+        folder, info = _renderSingleFiles(paths, layers, outPath, sr, channels, gains,
+                                          spread, peakDb, maxDurationSec, fadeOutSec)
+        info["transposeSemitones"] = semitones
+        return folder, info
 
     # offsets so that all first onsets land on the latest one
     ref = max(onsets)
@@ -150,6 +175,6 @@ def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
     if maxDurationSec and fadeOutSec:
         _fadeOut(mix, sr, fadeOutSec)
     _write(outPath, _toPeak(mix, peakDb), sr, channels)
-    info = dict(files=paths, offsetsSec=[o / sr for o in offsets],
+    info = dict(files=paths, transposeSemitones=semitones, offsetsSec=[o / sr for o in offsets],
                 durationSec=length / sr, sampleRate=sr, channels=channels)
     return outPath, info
