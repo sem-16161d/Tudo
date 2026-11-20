@@ -583,6 +583,8 @@ class Tudo(PSQL):
         play    : play the result right away (macOS afplay)
         options : see Render.mixFiles, e.g.
                   align="onset"   first onsets coincide instead of file starts
+                  align="singleFiles"  no mix: each file rendered on its own into
+                                  <outPath folder>/SINGLE_FILES/<name>_rendered.wav
                   spread=1.0      spread the files across the stereo field
                   normaliseEach=False   keep the original level differences
                   maxDurationSec=10, sr=44100, channels=1, peakDb=-1
@@ -604,7 +606,7 @@ class Tudo(PSQL):
                 print(f"Tudo: renderMix skips missing file: {p}")
         outPath, info = mixFiles(found, outPath, **options)
         print(f"Tudo: mixed {len(found)} files, {info['durationSec']:.2f} s -> {outPath}")
-        if play:
+        if play and os.path.isfile(outPath):          # singleFiles returns a folder
             subprocess.Popen(["afplay", outPath])
         return outPath
 
