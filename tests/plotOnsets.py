@@ -20,4 +20,5 @@ SAVE_PNG = None          # e.g. "/private/tmp/onsets.png"
 
 t = Tudo(DB_PATH)
 t.connect()
+t.onsetSettings = {"metric": 2, "threshold": 0.05, "minSliceLengthMs": 200}
 t.plotOnsets(TARGET, savePath=SAVE_PNG, **SETTINGS)
