@@ -585,6 +585,8 @@ class Tudo(PSQL):
                   align="onset"   first onsets coincide instead of file starts
                   align="singleFiles"  no mix: each file rendered on its own into
                                   <outPath folder>/SINGLE_FILES/<name>_rendered.wav
+                  forceMainPitch=443   transpose every file (varispeed) so its
+                                  stored mainPitchHz lands on 443 Hz
                   spread=1.0      spread the files across the stereo field
                   normaliseEach=False   keep the original level differences
                   maxDurationSec=10, sr=44100, channels=1, peakDb=-1
@@ -604,6 +606,13 @@ class Tudo(PSQL):
         for p in paths:
             if p not in found:
                 print(f"Tudo: renderMix skips missing file: {p}")
+        if options.get("forceMainPitch"):
+            rows = self.search(tableName, path__in=found, columns=["path", "mainPitchHz"])
+            pitch = {r["path"]: r["mainpitchhz"] for r in rows}
+            for p in found:
+                if not pitch.get(p):
+                    print(f"Tudo: renderMix: no mainPitchHz for {p}, not transposed")
+            options["mainPitches"] = [pitch.get(p) for p in found]
         outPath, info = mixFiles(found, outPath, **options)
         print(f"Tudo: mixed {len(found)} files, {info['durationSec']:.2f} s -> {outPath}")
         if play and os.path.isfile(outPath):          # singleFiles returns a folder

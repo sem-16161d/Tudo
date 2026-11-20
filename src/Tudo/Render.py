@@ -33,6 +33,59 @@ def _firstOnset(x, sr):
     return times[0] if times else 0.0
 
 
+def _pan(x, i, n, spread, channels):
+    """Equal-power position of file i of n (stereo only)."""
+    if channels != 2 or not spread or n < 2:
+        return x
+    pos = (i / (n - 1) - 0.5) * spread + 0.5            # 0 = left, 1 = right
+    return x * (np.array([np.cos(pos * np.pi / 2), np.sin(pos * np.pi / 2)]) * np.sqrt(2))
+
+
+def _fadeOut(x, sr, fadeOutSec):
+    k = min(len(x), int(fadeOutSec * sr))
+    if k > 0:
+        x[-k:] *= np.linspace(1, 0, k)[:, None]
+
+
+def _toPeak(x, peakDb):
+    peak = np.max(np.abs(x)) if len(x) else 0
+    return x * (10 ** (peakDb / 20) / peak) if peak > 0 else x
+
+
+def _write(path, x, sr, channels):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    fmt = {".aif": "AIFF", ".aiff": "AIFF", ".wav": "WAV", ".flac": "FLAC"}.get(
+        os.path.splitext(path)[1].lower())
+    sf.write(path, x if channels > 1 else x[:, 0], sr, format=fmt,
+             subtype="PCM_24" if fmt in ("AIFF", "WAV", "FLAC") else None)
+
+
+def _renderSingleFiles(paths, layers, outPath, sr, channels, gains, spread,
+                       peakDb, maxDurationSec, fadeOutSec):
+    folder = os.path.join(os.path.dirname(os.path.abspath(outPath)), "SINGLE_FILES")
+    written, n = [], len(layers)
+    for i, (p, x) in enumerate(zip(paths, layers)):
+        x = _pan(x * 10 ** ((gains[i] if gains else 0.0) / 20), i, n, spread, channels)
+        if maxDurationSec:
+            x = x[:int(maxDurationSec * sr)].copy()
+            if fadeOutSec:
+                _fadeOut(x, sr, fadeOutSec)
+        stem = os.path.splitext(os.path.basename(p))[0] + "_rendered"
+        out = os.path.join(folder, stem + ".wav")
+        k = 2
+        while out in written:                      # same name from different folders
+            out = os.path.join(folder, f"{stem}_{k}.wav")
+            k += 1
+        _write(out, _toPeak(x, peakDb), sr, channels)
+        written.append(out)
+    durations = [len(x) / sr for x in layers]
+    if maxDurationSec:
+        durations = [min(d, maxDurationSec) for d in durations]
+    info = dict(files=paths, outputs=written, offsetsSec=[0.0] * n,
+                durationSec=max(durations), sampleRate=sr, channels=channels)
+    return folder, info
+
+
 def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
              normaliseEach=True, gains=None, spread=0.0, peakDb=-1.0,
              maxDurationSec=None, fadeOutSec=0.05):
@@ -45,6 +98,10 @@ def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
     align         : "start" = all files start at 0
                     "onset" = the first onsets coincide (files with a late
                               attack are moved earlier, the others delayed)
+                    "singleFiles" = no mix: every file is rendered on its own
+                              (same format, gains, spread, peakDb,
+                              maxDurationSec) into a SINGLE_FILES folder next
+                              to outPath as <originalname>_rendered.wav
     normaliseEach : bring every file to the same peak before mixing, so loud
                     files don't cover the quiet ones
     gains         : optional list of extra gains in dB, one per file
@@ -53,7 +110,8 @@ def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
     peakDb        : peak level of the final mix in dBFS (no clipping)
     maxDurationSec: cut the mix after this time (with a short fade-out)
 
-    Returns (outPath, info) with the offsets used per file.
+    Returns (outPath, info) with the offsets used per file
+    (singleFiles: (SINGLE_FILES folder, info with the written files)).
     """
     paths = [p for p in paths if p]
     if not paths:
@@ -67,8 +125,11 @@ def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
                 x = x / peak
         layers.append(x)
         onsets.append(_firstOnset(x, sr) if align == "onset" else 0.0)
-    if align not in ("start", "onset"):
-        raise ValueError("Render.mixFiles: align must be 'start' or 'onset'")
+    if align not in ("start", "onset", "singleFiles"):
+        raise ValueError("Render.mixFiles: align must be 'start', 'onset' or 'singleFiles'")
+    if align == "singleFiles":
+        return _renderSingleFiles(paths, layers, outPath, sr, channels, gains,
+                                  spread, peakDb, maxDurationSec, fadeOutSec)
 
     # offsets so that all first onsets land on the latest one
     ref = max(onsets)
@@ -81,26 +142,14 @@ def mixFiles(paths, outPath, *, sr=48000, channels=2, align="start",
     n = len(layers)
     for i, (x, off) in enumerate(zip(layers, offsets)):
         g = 10 ** ((gains[i] if gains else 0.0) / 20)
-        if channels == 2 and spread and n > 1:
-            pos = (i / (n - 1) - 0.5) * spread + 0.5            # 0 = left, 1 = right
-            pan = np.array([np.cos(pos * np.pi / 2), np.sin(pos * np.pi / 2)]) * np.sqrt(2)
-            x = x * pan
+        x = _pan(x, i, n, spread, channels)
         end = min(length, off + len(x))
         if end > off:
             mix[off:end] += g * x[:end - off]
 
     if maxDurationSec and fadeOutSec:
-        k = min(len(mix), int(fadeOutSec * sr))
-        mix[-k:] *= np.linspace(1, 0, k)[:, None]
-    peak = np.max(np.abs(mix))
-    if peak > 0:
-        mix *= 10 ** (peakDb / 20) / peak
-
-    os.makedirs(os.path.dirname(os.path.abspath(outPath)), exist_ok=True)
-    fmt = {".aif": "AIFF", ".aiff": "AIFF", ".wav": "WAV", ".flac": "FLAC"}.get(
-        os.path.splitext(outPath)[1].lower())
-    sf.write(outPath, mix if channels > 1 else mix[:, 0], sr, format=fmt,
-             subtype="PCM_24" if fmt in ("AIFF", "WAV", "FLAC") else None)
+        _fadeOut(mix, sr, fadeOutSec)
+    _write(outPath, _toPeak(mix, peakDb), sr, channels)
     info = dict(files=paths, offsetsSec=[o / sr for o in offsets],
                 durationSec=length / sr, sampleRate=sr, channels=channels)
     return outPath, info
